@@ -108,49 +108,7 @@ def handle_commands(msg):
     chats.add(msg.chat.id)
     text = (
         "📋 <b>Доступные команды:</b>\n\n"
-        "/start — Проверить, что бот активен\n"
-        "чек — Просмотреть профиль пользователя (ответом)\n"
-        "чек @username — Проверить профиль по юзернейму\n"
-        "занести &lt;роль&gt; — Добавить пользователя в базу (ответом)\n"
-        "занести @username &lt;роль&gt; — Занести по юзернейму\n"
-        "вынести — Удалить из базы (ответом или @username)\n"
-        "команды — Показать список доступных команд"
-    )
-    bot.reply_to(msg, text)
 
-# 👀 Чек
-@bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
-def handle_check(msg):
-    chats.add(msg.chat.id)
-    
-    parts = msg.text.strip().split()
-    
-    # Проверяем, есть ли username в команде
-    if len(parts) >= 2 and parts[1].startswith("@"):
-        # Чек по username
-        username = parts[1][1:]  # убираем @
-        target_name = f"@{username}"
-        target_id = f"@{username}"
-        role = get_role(target_id)
-        risk = get_risk(role)
-        
-        text = (
-            f"👤 Профиль: {target_name}\n"
-            f"🔹 Роль: <code>{role}</code>\n"
-            f"📊 Вероятность скама: <code>{risk}</code>"
-        )
-    else:
-        # Чек ответом на сообщение или себя
-        user = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
-        role = get_role(user.id)
-        risk = get_risk(role)
-        text = (
-            f"👤 Профиль: <a href='tg://user?id={user.id}'>{user.first_name}</a>\n"
-            f"🔹 Роль: <code>{role}</code>\n"
-            f"📊 Вероятность скама: <code>{risk}</code>"
-        )
-    
-    bot.reply_to(msg, text)
 
 # ➕ Занести <роль>
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("занести"))
