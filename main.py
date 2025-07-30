@@ -2,12 +2,13 @@ import asyncio
 import json
 import os
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ParseMode
 from aiogram.filters import Command
+from aiogram.types import Message
+from aiogram.client.default import DefaultBotProperties
 
-BOT_TOKEN = '8434117020:AAETWdA3rkW_0M2IDtqvVWbFCTcIdTr0eiY'
-OWNER_ID = 7537570296  # твой Telegram ID
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8434117020:AAETWdA3rkW_0M2IDtqvVWbFCTcIdTr0eiY"
+OWNER_ID = 7537570296  # замени на свой Telegram ID
 
 db_path = "mid_base.json"
 if os.path.exists(db_path):
@@ -33,8 +34,7 @@ def get_risk(role: str) -> str:
         "игрок": "50% (лучше ходить гарантом)"
     }.get(role, "50%")
 
-# Здесь просто передаем parse_mode напрямую в Bot
-bot = Bot(BOT_TOKEN, parse_mode="HTML")
+bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 @dp.message(Command("start"))
