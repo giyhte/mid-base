@@ -5,20 +5,26 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatType, ParseMode
 from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
+from asyncio import Lock
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "8434117020:AAETWdA3rkW_0M2IDtqvVWbFCTcIdTr0eiY"
 OWNER_ID = 7537570296  # твой Telegram ID
 
 db_path = "mid_base.json"
+db_lock = Lock()  # блокировка для безопасной записи
+
+# Инициализация базы данных
 if os.path.exists(db_path):
-    with open(db_path, "r") as f:
+    with open(db_path, "r", encoding="utf-8") as f:
         db = json.load(f)
 else:
     db = {"users": {}, "banned": [], "reports": {}}
 
-def save_db():
-    with open(db_path, "w") as f:
-        json.dump(db, f, indent=4)
+async def save_db():
+    async with db_lock:
+        # Запись в файл
+        with open(db_path, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, indent=4)
 
 def get_role(user_id: int) -> str:
     if str(user_id) == str(OWNER_ID):
@@ -76,7 +82,7 @@ async def set_role(msg: Message):
         return await msg.reply("Нельзя менять роль владельцу.")
 
     db["users"][str(target.id)] = role
-    save_db()
+    await save_db()
     await msg.reply(f"{target.first_name} ‼️ ЗАНЕСЕН В БАЗУ КАК {role.upper()}")
 
 # Команда "команды" — список доступных команд
