@@ -4,7 +4,8 @@ import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.enums import ChatType
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command
+from aiogram.client.session import DefaultBotProperties
 
 BOT_TOKEN = '8434117020:AAETWdA3rkW_0M2IDtqvVWbFCTcIdTr0eiY'
 OWNER_ID = 7537570296  # твой Telegram ID
@@ -16,17 +17,14 @@ if os.path.exists(db_path):
 else:
     db = {"users": {}, "banned": [], "reports": {}}
 
-
 def save_db():
     with open(db_path, "w") as f:
         json.dump(db, f, indent=4)
-
 
 def get_role(user_id: int) -> str:
     if str(user_id) == str(OWNER_ID):
         return "владелец"
     return db["users"].get(str(user_id), "игрок")
-
 
 def get_risk(role: str) -> str:
     return {
@@ -36,15 +34,12 @@ def get_risk(role: str) -> str:
         "игрок": "50% (лучше ходить гарантом)"
     }.get(role, "50%")
 
-
-bot = Bot(BOT_TOKEN, parse_mode="HTML")
+bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
-
 
 @dp.message(Command("start"))
 async def start_cmd(msg: Message):
     await msg.answer("Привет! Я активен.")
-
 
 @dp.message(Command("чек"))
 async def check_profile(msg: Message):
@@ -58,7 +53,6 @@ async def check_profile(msg: Message):
         f"📊 Вероятность скама: <code>{risk}</code>"
     )
     await msg.reply(text)
-
 
 @dp.message(F.text.startswith("занести"))
 async def set_role(msg: Message):
@@ -84,7 +78,6 @@ async def set_role(msg: Message):
     save_db()
     await msg.reply(f"{target.first_name} теперь {role.upper()}")
 
-
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def tag_scammers(msg: Message):
     if not msg.from_user:
@@ -92,7 +85,6 @@ async def tag_scammers(msg: Message):
     role = get_role(msg.from_user.id)
     if role == "скамер":
         await msg.reply("⚠️ Этот пользователь занесён как <b>СКАМЕР</b>")
-
 
 @dp.message(F.text == "жалоба")
 async def report_user(msg: Message):
@@ -136,7 +128,6 @@ async def report_user(msg: Message):
 
     await msg.reply("Жалоба отправлена!")
 
-
 @dp.message(Command("сетка бан"))
 async def net_ban(msg: Message):
     if msg.from_user.id != OWNER_ID:
@@ -150,7 +141,6 @@ async def net_ban(msg: Message):
     save_db()
     await msg.reply(f"{user.first_name} теперь в глобальном бане (скамер)")
 
-
 @dp.message(F.new_chat_members)
 async def check_ban_on_join(msg: Message):
     for user in msg.new_chat_members:
@@ -158,10 +148,8 @@ async def check_ban_on_join(msg: Message):
             await bot.ban_chat_member(msg.chat.id, user.id)
             await msg.reply(f"🚫 {user.first_name} забанен глобально как СКАМЕР.")
 
-
 async def main():
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
