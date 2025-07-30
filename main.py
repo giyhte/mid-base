@@ -5,7 +5,6 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.enums import ChatType
 from aiogram.filters import Command
-from aiogram.client.session import DefaultBotProperties
 
 BOT_TOKEN = '8434117020:AAETWdA3rkW_0M2IDtqvVWbFCTcIdTr0eiY'
 OWNER_ID = 7537570296  # твой Telegram ID
@@ -34,7 +33,8 @@ def get_risk(role: str) -> str:
         "игрок": "50% (лучше ходить гарантом)"
     }.get(role, "50%")
 
-bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+# Здесь просто передаем parse_mode напрямую в Bot
+bot = Bot(BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
 @dp.message(Command("start"))
