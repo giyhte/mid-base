@@ -7,7 +7,7 @@ from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 from asyncio import Lock
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "8363145008:AAEEvGtZqv4weIsisQx3y8GyXV_2YFLWdPU"
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8363145008:AAEM6OSKNRjX3SDU6yINZwbMOEcsaOQVdiI"
 OWNER_ID = 7537570296  # твой Telegram ID
 
 db_path = "mid_base.json"
