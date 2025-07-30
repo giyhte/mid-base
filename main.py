@@ -13,7 +13,7 @@ OWNER_ID = 7537570296  # твой Telegram ID
 db_path = "mid_base.json"
 db_lock = Lock()  # блокировка для безопасной записи
 
-Инициализация базы данных
+#Инициализация базы данных
 
 if os.path.exists(db_path):
 with open(db_path, "r", encoding="utf-8") as f:
