@@ -76,7 +76,7 @@ async def set_role(msg: Message):
 
     db["users"][str(target.id)] = role
     save_db()
-    await msg.reply(f"{target.first_name} теперь {role.upper()}")
+    await msg.reply(f"{target.first_name} ‼️ЗАНЕСЕН В БАЗУ КАК {role.upper()}")
 
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def tag_scammers(msg: Message):
@@ -86,7 +86,9 @@ async def tag_scammers(msg: Message):
     if role == "скамер":
         await msg.reply("⚠️ Этот пользователь занесён как <b>СКАМЕР</b>")
 
-@dp.message(F.text == "жалоба")
+from aiogram.filters import Command
+
+@dp.message(Command("жалоба"))
 async def report_user(msg: Message):
     if not msg.reply_to_message:
         return await msg.reply("Жалоба отправляется в ответ на сообщение.")
@@ -128,7 +130,7 @@ async def report_user(msg: Message):
 
     await msg.reply("Жалоба отправлена!")
 
-@dp.message(Command("сетка бан"))
+@dp.message(Command("сетка_бан"))
 async def net_ban(msg: Message):
     if msg.from_user.id != OWNER_ID:
         return
