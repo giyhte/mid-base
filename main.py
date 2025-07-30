@@ -16,14 +16,17 @@ if os.path.exists(db_path):
 else:
     db = {"users": {}, "banned": [], "reports": {}}
 
+
 def save_db():
     with open(db_path, "w") as f:
         json.dump(db, f, indent=4)
+
 
 def get_role(user_id: int) -> str:
     if str(user_id) == str(OWNER_ID):
         return "владелец"
     return db["users"].get(str(user_id), "игрок")
+
 
 def get_risk(role: str) -> str:
     return {
@@ -32,6 +35,7 @@ def get_risk(role: str) -> str:
         "скамер": "100%",
         "игрок": "50% (лучше ходить гарантом)"
     }.get(role, "50%")
+
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -79,7 +83,7 @@ async def set_role(msg: Message):
     save_db()
     await msg.reply(f"{target.first_name} ‼️ ЗАНЕСЕН В БАЗУ КАК {role.upper()}")
 
-# Жалоба
+# Жалоба — отправка ЛС гарантам и владельцу
 @dp.message(F.text.lower().startswith("жалоба"))
 async def report_user(msg: Message):
     if not msg.reply_to_message:
@@ -110,19 +114,26 @@ async def report_user(msg: Message):
         f"💬 Сообщение: {msg.reply_to_message.text}"
     )
 
+    # Отправляем жалобу в ЛС всем гарантам и владельцу
+    recipients = set()
     for uid, role in db["users"].items():
-        if role == "гарант" and int(uid) not in [sender.id, reported.id]:
-            try:
-                await bot.send_message(int(uid), text)
-            except:
-                continue
+        if role == "гарант":
+            recipients.add(int(uid))
+    recipients.add(OWNER_ID)  # владелец тоже получает
 
-    if OWNER_ID not in [sender.id, reported.id]:
-        await bot.send_message(OWNER_ID, text)
+    for user_id in recipients:
+        # не отправляем жалобу отправителю и объекту жалобы (можно убрать, если надо)
+        if user_id in [sender.id, reported.id]:
+            continue
+        try:
+            await bot.send_message(user_id, text)
+        except Exception as e:
+            # Можно логировать ошибку, если нужно
+            pass
 
     await msg.reply("Жалоба отправлена!")
 
-# Сетка бан (по триггеру)
+# Сетка бан
 @dp.message(F.text.lower() == "сетка бан")
 async def net_ban(msg: Message):
     if msg.from_user.id != OWNER_ID:
@@ -139,7 +150,7 @@ async def net_ban(msg: Message):
     else:
         await msg.reply(f"{user.first_name} уже в бане.")
 
-# Автобан по базе при заходе в чат
+# Автобан при входе
 @dp.message(F.new_chat_members)
 async def check_ban_on_join(msg: Message):
     for user in msg.new_chat_members:
@@ -150,7 +161,7 @@ async def check_ban_on_join(msg: Message):
             except Exception as e:
                 await msg.reply(f"❗ Не удалось забанить {user.first_name}: {e}")
 
-# Предупреждение если скамер пишет
+# Предупреждение при сообщении от скамера
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def warn_scammer(msg: Message):
     if not msg.from_user:
