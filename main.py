@@ -14,12 +14,11 @@ db_path = "mid_base.json"
 db_lock = Lock()  # блокировка для безопасной записи
 
 #Инициализация базы данных
-
 if os.path.exists(db_path):
 with open(db_path, "r", encoding="utf-8") as f:
 db = json.load(f)
 else:
-db = {"users": {}, "banned": [], "reports": {}}
+db = {"users": {}, "banned": [], "reports": {}
 
 async def save_db():
 async with db_lock:
