@@ -16,17 +16,14 @@ if os.path.exists(db_path):
 else:
     db = {"users": {}, "banned": [], "reports": {}}
 
-
 def save_db():
     with open(db_path, "w") as f:
         json.dump(db, f, indent=4)
-
 
 def get_role(user_id: int) -> str:
     if str(user_id) == str(OWNER_ID):
         return "владелец"
     return db["users"].get(str(user_id), "игрок")
-
 
 def get_risk(role: str) -> str:
     return {
@@ -35,7 +32,6 @@ def get_risk(role: str) -> str:
         "скамер": "100%",
         "игрок": "50% (лучше ходить гарантом)"
     }.get(role, "50%")
-
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -83,85 +79,19 @@ async def set_role(msg: Message):
     save_db()
     await msg.reply(f"{target.first_name} ‼️ ЗАНЕСЕН В БАЗУ КАК {role.upper()}")
 
-# Жалоба — отправка ЛС гарантам и владельцу
-@dp.message(F.text.lower().startswith("жалоба"))
-async def report_user(msg: Message):
-    if not msg.reply_to_message:
-        return await msg.reply("Жалоба отправляется в ответ на сообщение.")
-
-    sender = msg.from_user
-    reported = msg.reply_to_message.from_user
-
-    now = asyncio.get_event_loop().time()
-    key = str(sender.id)
-    reports = db["reports"].get(key, {"count": 0, "time": now})
-
-    if now - float(reports["time"]) > 86400:
-        reports = {"count": 0, "time": now}
-
-    if reports["count"] >= 5:
-        return await msg.reply("Вы исчерпали лимит жалоб на сегодня.")
-
-    reports["count"] += 1
-    reports["time"] = now
-    db["reports"][key] = reports
-    save_db()
-
+# Команда "команды" — список доступных команд
+@dp.message(F.text.lower() == "команды")
+async def commands_list(msg: Message):
     text = (
-        f"🚨 <b>Жалоба</b>\n"
-        f"👤 От: <a href='tg://user?id={sender.id}'>{sender.first_name}</a>\n"
-        f"📌 На: <a href='tg://user?id={reported.id}'>{reported.first_name}</a>\n"
-        f"💬 Сообщение: {msg.reply_to_message.text}"
+        "📋 <b>Доступные команды:</b>\n\n"
+        "старт — Проверить, что бот активен\n"
+        "чек — Просмотреть профиль пользователя (ответом на сообщение или своё)\n"
+        "занести <роль> — Добавить пользователя в базу ролей (ответом на сообщение). Роли: скамер, гарант\n"
+        "команды — Показать список доступных команд"
     )
+    await msg.reply(text, parse_mode=ParseMode.HTML)
 
-    # Отправляем жалобу в ЛС всем гарантам и владельцу
-    recipients = set()
-    for uid, role in db["users"].items():
-        if role == "гарант":
-            recipients.add(int(uid))
-    recipients.add(OWNER_ID)  # владелец тоже получает
-
-    for user_id in recipients:
-        # не отправляем жалобу отправителю и объекту жалобы (можно убрать, если надо)
-        if user_id in [sender.id, reported.id]:
-            continue
-        try:
-            await bot.send_message(user_id, text)
-        except Exception as e:
-            # Можно логировать ошибку, если нужно
-            pass
-
-    await msg.reply("Жалоба отправлена!")
-
-# Сетка бан
-@dp.message(F.text.lower() == "сетка бан")
-async def net_ban(msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
-
-    if not msg.reply_to_message:
-        return await msg.reply("Ответьте на сообщение пользователя.")
-
-    user = msg.reply_to_message.from_user
-    if user.id not in db["banned"]:
-        db["banned"].append(user.id)
-        save_db()
-        await msg.reply(f"{user.first_name} теперь в глобальном бане (скамер)")
-    else:
-        await msg.reply(f"{user.first_name} уже в бане.")
-
-# Автобан при входе
-@dp.message(F.new_chat_members)
-async def check_ban_on_join(msg: Message):
-    for user in msg.new_chat_members:
-        if user.id in db["banned"]:
-            try:
-                await bot.ban_chat_member(msg.chat.id, user.id)
-                await msg.reply(f"🚫 {user.first_name} забанен глобально как СКАМЕР.")
-            except Exception as e:
-                await msg.reply(f"❗ Не удалось забанить {user.first_name}: {e}")
-
-# Предупреждение при сообщении от скамера
+# Предупреждение если скамер пишет
 @dp.message(F.chat.type.in_({"group", "supergroup"}))
 async def warn_scammer(msg: Message):
     if not msg.from_user:
