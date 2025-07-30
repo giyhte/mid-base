@@ -12,9 +12,7 @@ DB_PASSWORD = "1upRsp7dLm"
 DB_NAME = "sql8792761"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-
-# 📌 Список всех чатов, где бот был активен
-chats = set()
+chats = set()  # 📌 Чаты
 
 # 📦 Подключение к БД
 def get_connection():
@@ -47,7 +45,7 @@ def init_db():
 
 init_db()
 
-# 🔢 Получение риска по роли
+# 🔢 Получение риска
 def get_risk(role):
     risks = {
         "владелец": "0%",
@@ -59,7 +57,7 @@ def get_risk(role):
     }
     return risks.get(role, "50%")
 
-# 📊 Получение роли пользователя
+# 📊 Получение роли
 def get_role(user_id, username=None):
     try:
         if isinstance(user_id, int) and user_id in OWNER_IDS:
@@ -67,22 +65,37 @@ def get_role(user_id, username=None):
 
         conn = get_connection()
         cursor = conn.cursor()
-
         if isinstance(user_id, str) and user_id.startswith("@"):
             cursor.execute("SELECT role FROM users WHERE user_id = %s", (user_id,))
         else:
             cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
-
         result = cursor.fetchone()
         cursor.close()
         conn.close()
-
         if result and result[0]:
             return result[0]
         return "непроверенный"
     except Exception as e:
         print(f"Ошибка при получении роли: {e}")
         return "непроверенный"
+
+# ✅ /start
+@bot.message_handler(commands=["start"])
+def start_command(msg):
+    bot.reply_to(msg, "👋 Привет! Я активен. Используй /help, чтобы увидеть доступные команды.")
+
+# ✅ /help
+@bot.message_handler(commands=["help"])
+def help_command(msg):
+    text = (
+        "<b>📘 Команды:</b>\n"
+        "— <code>чек</code> (в ответ на сообщение)\n"
+        "— <code>занести</code> (в ответ или с @username)\n"
+        "— <code>вынести</code> (в ответ или с @username)\n"
+        "\n"
+        "Бот активен и работает ✅"
+    )
+    bot.reply_to(msg, text)
 
 # 👀 Чек
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
@@ -194,7 +207,6 @@ def handle_remove_user(msg):
             return
 
     parts = msg.text.strip().split()
-
     if len(parts) >= 2 and parts[1].startswith("@"):
         username = parts[1][1:]
         target_id = f"@{username}"
@@ -239,7 +251,7 @@ def on_new_members(message):
                 f"Роль: <code>{role}</code>\n📊 Риск: <code>{risk}</code>"
             )
 
-# Авточек в чатах
+# Авточек в группах
 @bot.message_handler(func=lambda msg: msg.chat.type in ["group", "supergroup"])
 def auto_check_group(msg):
     chats.add(msg.chat.id)
@@ -248,7 +260,7 @@ def auto_check_group(msg):
     if role == "скамер":
         bot.reply_to(msg, f"⚠️ Осторожно! <a href='tg://user?id={user.id}'>{user.first_name}</a> — <b>СКАМЕР</b>.")
 
-# Обработка всего
+# Общая регистрация
 @bot.message_handler(func=lambda msg: True)
 def register_chat(msg):
     chats.add(msg.chat.id)
