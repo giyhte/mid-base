@@ -1,4 +1,4 @@
-    import telebot
+import telebot
 import mysql.connector
 from mysql.connector import Error
 
