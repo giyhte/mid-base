@@ -1,3 +1,4 @@
+
 import telebot
 import mysql.connector
 from mysql.connector import Error
@@ -50,6 +51,7 @@ init_db()
 # 📊 Получение роли пользователя
 def get_role(user_id, username=None):
     try:
+        # Проверяем владельцев только для числовых ID
         if isinstance(user_id, int) and user_id in OWNER_IDS:
             return "владелец"
 
@@ -58,10 +60,10 @@ def get_role(user_id, username=None):
         
         # Ищем по ID или по username
         if isinstance(user_id, str) and user_id.startswith("@"):
+            # Поиск по username
             cursor.execute("SELECT role FROM users WHERE user_id = %s", (user_id,))
-        elif username:
-            cursor.execute("SELECT role FROM users WHERE user_id = %s OR user_id = %s", (str(user_id), f"@{username}"))
         else:
+            # Поиск по числовому ID
             cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
             
         result = cursor.fetchone()
@@ -329,4 +331,3 @@ try:
     bot.infinity_polling()
 except Exception as e:
     print(f"Ошибка при запуске бота: {e}")
-        
