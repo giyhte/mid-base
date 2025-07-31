@@ -2,7 +2,6 @@ import telebot
 import mysql.connector
 from mysql.connector import Error
 
-# 🔐 Конфигурация
 BOT_TOKEN = "8363145008:AAEM6OSKNRjX3SDU6yINZwbMOEcsaOQVdiI"
 OWNER_IDS = [7537570296, 5821123636]
 
@@ -12,9 +11,8 @@ DB_PASSWORD = "1upRsp7dLm"
 DB_NAME = "sql8792761"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-chats = set()  # 📌 Чаты
+chats = set()
 
-# 📦 Подключение к БД
 def get_connection():
     return mysql.connector.connect(
         host=DB_HOST,
@@ -24,7 +22,6 @@ def get_connection():
         charset="utf8mb4"
     )
 
-# ⚙️ Инициализация таблицы
 def init_db():
     try:
         conn = get_connection()
@@ -39,13 +36,11 @@ def init_db():
         conn.commit()
         cursor.close()
         conn.close()
-        print("База данных инициализирована успешно")
     except Error as e:
         print(f"Ошибка при создании таблицы: {e}")
 
 init_db()
 
-# 🔢 Получение риска
 def get_risk(role):
     risks = {
         "владелец": "0%",
@@ -57,7 +52,6 @@ def get_risk(role):
     }
     return risks.get(role, "50%")
 
-# 📊 Получение роли
 def get_role(user_id, username=None):
     try:
         if isinstance(user_id, int) and user_id in OWNER_IDS:
@@ -65,26 +59,19 @@ def get_role(user_id, username=None):
 
         conn = get_connection()
         cursor = conn.cursor()
-        if isinstance(user_id, str) and user_id.startswith("@"):
-            cursor.execute("SELECT role FROM users WHERE user_id = %s", (user_id,))
-        else:
-            cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
+        cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
         result = cursor.fetchone()
         cursor.close()
         conn.close()
-        if result and result[0]:
-            return result[0]
-        return "непроверенный"
+        return result[0] if result and result[0] else "непроверенный"
     except Exception as e:
         print(f"Ошибка при получении роли: {e}")
         return "непроверенный"
 
-# ✅ /start
 @bot.message_handler(commands=["start"])
 def start_command(msg):
     bot.reply_to(msg, "👋 Привет! Я активен. Используй /help, чтобы увидеть доступные команды.")
 
-# ✅ /help
 @bot.message_handler(commands=["help"])
 def help_command(msg):
     text = (
@@ -97,7 +84,6 @@ def help_command(msg):
     )
     bot.reply_to(msg, text)
 
-# 👀 Чек
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
 def handle_check(msg):
     chats.add(msg.chat.id)
@@ -111,7 +97,6 @@ def handle_check(msg):
     )
     bot.reply_to(msg, text)
 
-# ➕ Занести
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("занести"))
 def handle_add_role(msg):
     chats.add(msg.chat.id)
@@ -134,6 +119,7 @@ def handle_add_role(msg):
         role = parts[2].lower()
         target_id = f"@{username}"
         target_name = f"@{username}"
+        profile_link = f"<a href='https://t.me/{username}'>@{username}</a>"
     else:
         if not msg.reply_to_message:
             bot.reply_to(msg, "Ответьте на сообщение или используйте занести @username роль")
@@ -142,6 +128,7 @@ def handle_add_role(msg):
         target = msg.reply_to_message.from_user
         target_id = target.id
         target_name = target.first_name
+        profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
 
     allowed_roles = ["скамер", "гарант", "владелец_чата", "отказ", "отказ_от_гаранта"]
     if role not in allowed_roles:
@@ -187,16 +174,15 @@ def handle_add_role(msg):
         return
 
     if role_text == "скамер":
-        alert = f"⚠️ <a href='tg://user?id={target_id}'>{target_name}</a> занесён как <b>СКАМЕР</b>!"
+        alert = f"⚠️ {profile_link} занесён как <b>СКАМЕР</b>!"
         for chat_id in chats:
             try:
                 bot.send_message(chat_id, alert)
             except Exception as e:
                 print(f"Не удалось отправить в чат {chat_id}: {e}")
 
-    bot.reply_to(msg, f"{target_name} ✅ занесён как {role_text.upper()}")
+    bot.reply_to(msg, f"{profile_link} ✅ занесён как {role_text.upper()}")
 
-# ➖ Вынести
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("вынести"))
 def handle_remove_user(msg):
     chats.add(msg.chat.id)
@@ -211,6 +197,7 @@ def handle_remove_user(msg):
         username = parts[1][1:]
         target_id = f"@{username}"
         target_name = f"@{username}"
+        profile_link = f"<a href='https://t.me/{username}'>@{username}</a>"
     else:
         if not msg.reply_to_message:
             bot.reply_to(msg, "Ответьте на сообщение или используйте: вынести @username")
@@ -218,6 +205,7 @@ def handle_remove_user(msg):
         target = msg.reply_to_message.from_user
         target_id = target.id
         target_name = target.first_name
+        profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
 
     if isinstance(target_id, int) and target_id in OWNER_IDS:
         bot.reply_to(msg, "❌ Нельзя выносить владельца.")
@@ -229,15 +217,14 @@ def handle_remove_user(msg):
         cursor.execute("DELETE FROM users WHERE user_id = %s", (str(target_id),))
         if cursor.rowcount > 0:
             conn.commit()
-            bot.reply_to(msg, f"✅ {target_name} удален из базы")
+            bot.reply_to(msg, f"✅ {profile_link} удален из базы")
         else:
-            bot.reply_to(msg, f"❌ {target_name} не найден")
+            bot.reply_to(msg, f"❌ {profile_link} не найден")
         cursor.close()
         conn.close()
     except Error as e:
         bot.reply_to(msg, f"Ошибка БД: {e}")
 
-# Новые участники
 @bot.message_handler(content_types=['new_chat_members'])
 def on_new_members(message):
     chats.add(message.chat.id)
@@ -251,7 +238,6 @@ def on_new_members(message):
                 f"Роль: <code>{role}</code>\n📊 Риск: <code>{risk}</code>"
             )
 
-# Авточек в группах
 @bot.message_handler(func=lambda msg: msg.chat.type in ["group", "supergroup"])
 def auto_check_group(msg):
     chats.add(msg.chat.id)
@@ -260,12 +246,10 @@ def auto_check_group(msg):
     if role == "скамер":
         bot.reply_to(msg, f"⚠️ Осторожно! <a href='tg://user?id={user.id}'>{user.first_name}</a> — <b>СКАМЕР</b>.")
 
-# Общая регистрация
 @bot.message_handler(func=lambda msg: True)
 def register_chat(msg):
     chats.add(msg.chat.id)
 
-# 🔁 Старт бота
 print("Бот запускается...")
 try:
     bot.infinity_polling()
