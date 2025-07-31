@@ -1,17 +1,9 @@
-
 import telebot
 import mysql.connector
 from mysql.connector import Error
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = "8363145008:AAEM6OSKNRjX3SDU6yINZwbMOEcsaOQVdiI"
 OWNER_IDS = [7537570296, 5821123636]
-# Словарь соответствия username владельцев (без @)
-OWNER_USERNAMES = {
-    "midgarant": 7537570296,  # ваш username в нижнем регистре
-    "MidGarant": 7537570296,  # дублируем для совместимости
-    # добавьте других владельцев если нужно
-}
 
 DB_HOST = "sql8.freesqldatabase.com"
 DB_USER = "sql8792761"
@@ -35,13 +27,11 @@ def init_db():
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id VARCHAR(100) PRIMARY KEY,
-                username VARCHAR(100),
-                role VARCHAR(50) DEFAULT 'непроверенный',
-                scam_percent VARCHAR(10) DEFAULT '50%'
-            )
-        """)
+        CREATE TABLE IF NOT EXISTS users (
+            user_id VARCHAR(100) PRIMARY KEY,
+            role VARCHAR(50) DEFAULT 'непроверенный',
+            scam_percent VARCHAR(10) DEFAULT '50%'
+        )""")
         conn.commit()
         cursor.close()
         conn.close()
@@ -50,191 +40,52 @@ def init_db():
 
 init_db()
 
-def get_risk(role):
-    risks = {
-        "владелец": "0%",
-        "гарант": "0%",
-        "владелец чата": "10%",
-        "отказ от гаранта": "80%",
-        "скамер": "100%",
-        "непроверенный": "50%"
-    }
-    return risks.get(role, "50%")
-
-def normalize_user_id(user_id, username=None):
-    """Нормализует ID пользователя - приоритет username с @"""
-    if username:
-        return f"@{username.lower()}"
-    return str(user_id)
-
-def get_user_role(user_id, username=None):
-    """Получает роль пользователя"""
+def get_risk(user_id):
     try:
-        # Проверяем владельцев по ID
         if isinstance(user_id, int) and user_id in OWNER_IDS:
-            return "владелец"
-        
-        # Проверяем владельцев по username
-        if username and username.lower() in [k.lower() for k in OWNER_USERNAMES.keys()]:
-            return "владелец"
-        
+            return "0%"
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # Если передан username, ищем по нему
-        if username:
-            cursor.execute("SELECT role FROM users WHERE LOWER(user_id) = LOWER(%s) OR LOWER(user_id) = LOWER(%s)", 
-                          (f"@{username}", username))
-            result = cursor.fetchone()
-            if result and result[0]:
-                cursor.close()
-                conn.close()
-                return result[0]
-        
-        # Ищем по ID
-        if user_id:
-            cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
-            result = cursor.fetchone()
-            if result and result[0]:
-                cursor.close()
-                conn.close()
-                return result[0]
-        
+        cursor.execute("SELECT role, scam_percent FROM users WHERE user_id = %s", (str(user_id),))
+        result = cursor.fetchone()
         cursor.close()
         conn.close()
-        return "непроверенный"
+        
+        if result:
+            role, scam_percent = result
+            # Если есть кастомный процент, используем его
+            if scam_percent and scam_percent != "50%":
+                return scam_percent
+            # Иначе используем стандартный для роли
+            risks = {
+                "владелец": "0%",
+                "гарант": "0%",
+                "владелец чата": "10%",
+                "отказ от гаранта": "80%",
+                "скамер": "100%",
+                "непроверенный": "50%"
+            }
+            return risks.get(role, "50%")
+        else:
+            return "50%"
+    except Exception as e:
+        print(f"Ошибка при получении риска: {e}")
+        return "50%"
+
+def get_role(user_id):
+    try:
+        if isinstance(user_id, int) and user_id in OWNER_IDS:
+            return "владелец"
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result[0] if result and result[0] else "непроверенный"
     except Exception as e:
         print(f"Ошибка при получении роли: {e}")
         return "непроверенный"
-
-def save_user_role(user_id, username, role, scam_percent):
-    """Сохраняет роль пользователя с единой логикой"""
-    try:
-        normalized_id = normalize_user_id(user_id, username)
-        
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Удаляем все старые записи для этого пользователя
-        cursor.execute("DELETE FROM users WHERE user_id = %s OR LOWER(user_id) = LOWER(%s)", 
-                      (str(user_id), f"@{username.lower()}" if username else ""))
-        
-        if username:
-            cursor.execute("DELETE FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
-        
-        # Вставляем новую запись
-        cursor.execute(
-            "INSERT INTO users (user_id, username, role, scam_percent) VALUES (%s, %s, %s, %s)",
-            (normalized_id, username.lower() if username else None, role, scam_percent)
-        )
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return True
-    except Error as e:
-        print(f"Ошибка при сохранении роли: {e}")
-        return False
-
-def delete_user(user_id, username):
-    """Удаляет пользователя из БД"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Удаляем все возможные записи
-        cursor.execute("DELETE FROM users WHERE user_id = %s OR LOWER(user_id) = LOWER(%s)", 
-                      (str(user_id), f"@{username.lower()}" if username else ""))
-        
-        if username:
-            cursor.execute("DELETE FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
-        
-        rowcount = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return rowcount > 0
-    except Error as e:
-        print(f"Ошибка при удалении: {e}")
-        return False
-
-def format_user_profile(user_id, username, first_name):
-    """Форматирует профиль пользователя"""
-    if username:
-        return f"<a href='https://t.me/{username}'>@{username}</a>"
-    else:
-        return f"<a href='tg://user?id={user_id}'>{first_name}</a>"
-
-def get_all_scammers():
-    """Получает всех скамеров и пользователей с отказом от гаранта"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, username, role FROM users WHERE role IN ('скамер', 'отказ от гаранта')")
-        results = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return results
-    except Exception as e:
-        print(f"Ошибка при получении скамеров: {e}")
-        return []
-
-def create_admin_keyboard():
-    """Создает клавиатуру для админ-панели"""
-    markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton("📋 Список скамеров", callback_data="list_scammers"))
-    markup.row(InlineKeyboardButton("🚫 Список отказов от гаранта", callback_data="list_refuses"))
-    markup.row(InlineKeyboardButton("📊 Все проблемные", callback_data="list_all"))
-    markup.row(InlineKeyboardButton("👥 Все пользователи", callback_data="list_users"))
-    markup.row(InlineKeyboardButton("✏️ Изменить пользователя", callback_data="edit_user"))
-    markup.row(InlineKeyboardButton("🔄 Обновить", callback_data="refresh_admin"))
-    return markup
-
-def create_edit_keyboard():
-    """Создает клавиатуру для редактирования"""
-    markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton("🔴 Скамер (100%)", callback_data="edit_role_scammer"))
-    markup.row(InlineKeyboardButton("🟡 Отказ от гаранта (80%)", callback_data="edit_role_refuse"))
-    markup.row(InlineKeyboardButton("🟢 Гарант (0%)", callback_data="edit_role_garant"))
-    markup.row(InlineKeyboardButton("🔵 Владелец чата (10%)", callback_data="edit_role_owner"))
-    markup.row(InlineKeyboardButton("⚪ Непроверенный (50%)", callback_data="edit_role_unverified"))
-    markup.row(InlineKeyboardButton("🔢 Изменить процент", callback_data="edit_percent"))
-    markup.row(InlineKeyboardButton("🗑️ Удалить из БД", callback_data="edit_delete"))
-    markup.row(InlineKeyboardButton("◀️ Назад", callback_data="refresh_admin"))
-    return markup
-
-def get_all_users():
-    """Получает всех пользователей из БД"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, username, role, scam_percent FROM users ORDER BY role")
-        results = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return results
-    except Exception as e:
-        print(f"Ошибка при получении пользователей: {e}")
-        return []
-
-def update_user_role_by_id(user_id, new_role, new_percent):
-    """Обновляет роль и процент пользователя по ID"""
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET role = %s, scam_percent = %s WHERE user_id = %s", 
-                      (new_role, new_percent, user_id))
-        rowcount = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return rowcount > 0
-    except Exception as e:
-        print(f"Ошибка при обновлении пользователя: {e}")
-        return False
-
-# Временное хранилище для редактирования
-edit_sessions = {}
 
 @bot.message_handler(commands=["start"])
 def start_command(msg):
@@ -242,235 +93,134 @@ def start_command(msg):
 
 @bot.message_handler(commands=["help"])
 def help_command(msg):
-    text = (
-        "<b>📘 Команды:</b>\n"
-        "— <code>чек</code> (в ответ на сообщение или для проверки себя)\n"
-        "— <code>занести</code> (только в ответ на сообщение)\n"
-        "— <code>вынести</code> (только в ответ на сообщение)\n"
-        "\n"
-        "Бот активен и работает ✅"
-    )
+    if msg.from_user.id in OWNER_IDS:
+        text = (
+            "📘 Команды:\n"
+            "— чек (в ответ на сообщение или без параметров)\n"
+            "— занести (в ответ на сообщение)\n"
+            "— вынести (в ответ на сообщение)\n"
+            "— ип 30 (в ответ на сообщение)\n"
+            "— /гс (текст сообщения) — отправить глобальное сообщение во все чаты\n"
+            "— /чаты — посмотреть список активных чатов\n"
+            "\nБот активен и работает ✅"
+        )
+    else:
+        text = (
+            "📘 Команды:\n"
+            "— чек (в ответ на сообщение или без параметров)\n"
+            "— занести (в ответ на сообщение)\n"
+            "— вынести (в ответ на сообщение)\n"
+            "\nБот активен и работает ✅"
+        )
     bot.reply_to(msg, text)
 
-@bot.message_handler(commands=["admin"])
-def admin_panel(msg):
-    """Админ-панель только для владельцев в приватных чатах"""
-    if msg.chat.type != "private":
-        return
-    
-    if msg.from_user.id not in OWNER_IDS:
-        bot.reply_to(msg, "❌ У вас нет доступа к админ-панели")
-        return
-    
-    markup = create_admin_keyboard()
-    bot.reply_to(msg, "🔧 <b>Админ-панель</b>\n\nВыберите действие:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_admin_callbacks(call):
-    """Обработчик кнопок админ-панели"""
-    if call.from_user.id not in OWNER_IDS:
-        bot.answer_callback_query(call.id, "❌ Нет доступа")
-        return
-    
+def get_user_by_username(username):
+    """Сохраняет username в базе данных для последующего поиска по ID"""
     try:
-        if call.data == "list_scammers":
-            scammers = get_all_scammers()
-            scammer_list = [user for user in scammers if user[2] == "скамер"]
-            
-            if not scammer_list:
-                text = "📋 <b>Список скамеров:</b>\n\n❌ Скамеров не найдено"
-            else:
-                text = f"📋 <b>Список скамеров ({len(scammer_list)}):</b>\n\n"
-                for user_id, username, role in scammer_list:
-                    if user_id.startswith("@"):
-                        text += f"• <a href='https://t.me/{user_id[1:]}'>{user_id}</a>\n"
-                    else:
-                        text += f"• ID: <code>{user_id}</code>\n"
-            
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                 reply_markup=create_admin_keyboard(), parse_mode="HTML")
+        # Убираем @ если он есть
+        username = username.lstrip('@')
         
-        elif call.data == "list_refuses":
-            scammers = get_all_scammers()
-            refuse_list = [user for user in scammers if user[2] == "отказ от гаранта"]
-            
-            if not refuse_list:
-                text = "🚫 <b>Список отказов от гаранта:</b>\n\n❌ Отказов не найдено"
-            else:
-                text = f"🚫 <b>Список отказов от гаранта ({len(refuse_list)}):</b>\n\n"
-                for user_id, username, role in refuse_list:
-                    if user_id.startswith("@"):
-                        text += f"• <a href='https://t.me/{user_id[1:]}'>{user_id}</a>\n"
-                    else:
-                        text += f"• ID: <code>{user_id}</code>\n"
-            
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                 reply_markup=create_admin_keyboard(), parse_mode="HTML")
+        # Пытаемся найти пользователя через разные методы
+        user_info = None
         
-        elif call.data == "list_all":
-            scammers = get_all_scammers()
+        # Метод 1: Прямой поиск через API
+        try:
+            user_info = bot.get_chat(f"@{username}")
+        except:
+            pass
             
-            if not scammers:
-                text = "📊 <b>Все проблемные пользователи:</b>\n\n❌ Проблемных пользователей не найдено"
-            else:
-                text = f"📊 <b>Все проблемные пользователи ({len(scammers)}):</b>\n\n"
-                for user_id, username, role in scammers:
-                    role_emoji = "🔴" if role == "скамер" else "🟡"
-                    if user_id.startswith("@"):
-                        text += f"{role_emoji} <a href='https://t.me/{user_id[1:]}'>{user_id}</a> - <code>{role}</code>\n"
-                    else:
-                        text += f"{role_emoji} ID: <code>{user_id}</code> - <code>{role}</code>\n"
+        # Если не найден, возвращаем None
+        if user_info is None:
+            return None
             
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                 reply_markup=create_admin_keyboard(), parse_mode="HTML")
-        
-        elif call.data == "list_users":
-            users = get_all_users()
-            
-            if not users:
-                text = "👥 <b>Все пользователи:</b>\n\n❌ Пользователей не найдено"
-            else:
-                text = f"👥 <b>Все пользователи ({len(users)}):</b>\n\n"
-                for user_id, username, role, percent in users:
-                    role_emoji = {"скамер": "🔴", "отказ от гаранта": "🟡", "гарант": "🟢", "владелец чата": "🔵"}.get(role, "⚪")
-                    if user_id.startswith("@"):
-                        text += f"{role_emoji} <a href='https://t.me/{user_id[1:]}'>{user_id}</a> - <code>{role}</code> ({percent})\n"
-                    else:
-                        text += f"{role_emoji} ID: <code>{user_id}</code> - <code>{role}</code> ({percent})\n"
-            
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                 reply_markup=create_admin_keyboard(), parse_mode="HTML")
-        
-        elif call.data == "edit_user":
-            text = "✏️ <b>Редактирование пользователя</b>\n\nОтправьте ID пользователя или @username для редактирования:"
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                 reply_markup=create_admin_keyboard(), parse_mode="HTML")
-            # Устанавливаем режим ожидания ID
-            edit_sessions[call.from_user.id] = {"waiting_for_id": True, "message_id": call.message.message_id}
-        
-        elif call.data == "refresh_admin":
-            markup = create_admin_keyboard()
-            bot.edit_message_text("🔧 <b>Админ-панель</b>\n\nВыберите действие:", 
-                                 call.message.chat.id, call.message.message_id, 
-                                 reply_markup=markup, parse_mode="HTML")
-        
-        elif call.data.startswith("edit_role_"):
-            role_map = {
-                "edit_role_scammer": ("скамер", "100%"),
-                "edit_role_refuse": ("отказ от гаранта", "80%"),
-                "edit_role_garant": ("гарант", "0%"),
-                "edit_role_owner": ("владелец чата", "10%"),
-                "edit_role_unverified": ("непроверенный", "50%")
-            }
-            
-            if call.from_user.id in edit_sessions and "target_id" in edit_sessions[call.from_user.id]:
-                target_id = edit_sessions[call.from_user.id]["target_id"]
-                new_role, new_percent = role_map[call.data]
-                
-                if update_user_role_by_id(target_id, new_role, new_percent):
-                    text = f"✅ <b>Пользователь обновлен</b>\n\nID: <code>{target_id}</code>\nРоль: <code>{new_role}</code>\nПроцент: <code>{new_percent}</code>"
-                    del edit_sessions[call.from_user.id]
-                else:
-                    text = "❌ Ошибка при обновлении пользователя"
-                
-                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                     reply_markup=create_admin_keyboard(), parse_mode="HTML")
-        
-        elif call.data == "edit_delete":
-            if call.from_user.id in edit_sessions and "target_id" in edit_sessions[call.from_user.id]:
-                target_id = edit_sessions[call.from_user.id]["target_id"]
-                
-                try:
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM users WHERE user_id = %s", (target_id,))
-                    success = cursor.rowcount > 0
-                    conn.commit()
-                    cursor.close()
-                    conn.close()
-                    
-                    if success:
-                        text = f"✅ <b>Пользователь удален</b>\n\nID: <code>{target_id}</code>"
-                    else:
-                        text = "❌ Пользователь не найден в БД"
-                    
-                    del edit_sessions[call.from_user.id]
-                except Exception as e:
-                    text = f"❌ Ошибка при удалении: {e}"
-                
-                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                     reply_markup=create_admin_keyboard(), parse_mode="HTML")
-        
-        elif call.data == "edit_percent":
-            if call.from_user.id in edit_sessions and "target_id" in edit_sessions[call.from_user.id]:
-                text = "🔢 <b>Изменение процента</b>\n\nОтправьте новый процент (например: 25%):"
-                edit_sessions[call.from_user.id]["waiting_for_percent"] = True
-                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, 
-                                     reply_markup=create_admin_keyboard(), parse_mode="HTML")
-    
+        return user_info
     except Exception as e:
-        print(f"Ошибка в callback handler: {e}")
-        bot.answer_callback_query(call.id, "❌ Произошла ошибка")
-    
-    bot.answer_callback_query(call.id)
+        print(f"Ошибка при получении пользователя по username {username}: {e}")
+        return None
+
+def save_username_mapping(user_id, username):
+    """Сохраняет связь user_id -> username в базе данных"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Создаем таблицу для хранения username если её нет
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usernames (
+            user_id VARCHAR(100) PRIMARY KEY,
+            username VARCHAR(100)
+        )""")
+        # Сохраняем или обновляем username
+        cursor.execute(
+            "REPLACE INTO usernames (user_id, username) VALUES (%s, %s)",
+            (str(user_id), username)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Ошибка при сохранении username: {e}")
+
+def find_user_by_username(username):
+    """Ищет пользователя по username в базе данных"""
+    try:
+        username = username.lstrip('@')
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM usernames WHERE username = %s", (username,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result[0] if result else None
+    except Exception as e:
+        print(f"Ошибка при поиске username в БД: {e}")
+        return None
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
 def handle_check(msg):
     chats.add(msg.chat.id)
     
-    # Если команда без ответа - проверяем себя
-    if not msg.reply_to_message:
-        user = msg.from_user
-        role = get_user_role(user.id, user.username)
-        risk = get_risk(role)
-        profile_link = format_user_profile(user.id, user.username, user.first_name)
-        
-        text = (
-            f"👤 Ваш профиль: {profile_link}\n"
-            f"🔹 Роль: <code>{role}</code>\n"
-            f"📊 Вероятность скама: <code>{risk}</code>"
-        )
-        bot.reply_to(msg, text)
-        return
+    # Проверяем по reply или автора сообщения
+    user = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
+    user_id = user.id
+    user_name = user.first_name
+    role = get_role(user_id)
+    risk = get_risk(user_id)
+    profile_link = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
     
-    # Проверка по ответу на сообщение
-    if msg.reply_to_message:
-        user = msg.reply_to_message.from_user
-        role = get_user_role(user.id, user.username)
-        risk = get_risk(role)
-        profile_link = format_user_profile(user.id, user.username, user.first_name)
-            
-        text = (
-            f"👤 Профиль: {profile_link}\n"
-            f"🔹 Роль: <code>{role}</code>\n"
-            f"📊 Вероятность скама: <code>{risk}</code>"
-        )
-        bot.reply_to(msg, text)
-        return
+    # Сохраняем username если он есть
+    if user.username:
+        save_username_mapping(user_id, user.username)
+
+    text = (
+        f"👤 Профиль: {profile_link}\n"
+        f"🔹 Роль: {role}\n"
+        f"📊 Вероятность скама: {risk}"
+    )
+    bot.reply_to(msg, text)
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("занести"))
 def handle_add_role(msg):
     chats.add(msg.chat.id)
-    caller_role = get_user_role(msg.from_user.id, msg.from_user.username)
+    caller_role = get_role(msg.from_user.id)
 
     if msg.chat.type != "private":
         if msg.from_user.id not in OWNER_IDS and caller_role not in ["гарант", "владелец чата"]:
             return
 
-    parts = msg.text.strip().split()
-    if len(parts) < 2:
-        bot.reply_to(msg, "Пример: занести скамер (ответом на сообщение)")
+    if not msg.reply_to_message:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя, которого хотите занести.")
         return
 
-    if not msg.reply_to_message:
-        bot.reply_to(msg, "❌ Ответьте на сообщение пользователя")
+    parts = msg.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(msg, "Пример: занести скамер (в ответ на сообщение)")
         return
-    
+
     role = parts[1].lower()
     target = msg.reply_to_message.from_user
     target_id = target.id
-    target_username = target.username
-    profile_link = format_user_profile(target.id, target.username, target.first_name)
+    target_name = target.first_name
+    profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
 
     allowed_roles = ["скамер", "гарант", "владелец_чата", "отказ", "отказ_от_гаранта"]
     if role not in allowed_roles:
@@ -481,12 +231,7 @@ def handle_add_role(msg):
         bot.reply_to(msg, "❌ Нельзя заносить гарантов.")
         return
 
-    # Проверка на владельца
-    if target_username and target_username.lower() in [k.lower() for k in OWNER_USERNAMES.keys()]:
-        bot.reply_to(msg, "❌ Нельзя менять роль владельцу.")
-        return
-    
-    if target_id and target_id in OWNER_IDS:
+    if isinstance(target_id, int) and target_id in OWNER_IDS:
         bot.reply_to(msg, "❌ Нельзя менять роль владельцу.")
         return
 
@@ -506,8 +251,18 @@ def handle_add_role(msg):
         role_text = role
         scam_percent = "50%"
 
-    if not save_user_role(target_id, target_username, role_text, scam_percent):
-        bot.reply_to(msg, "❌ Ошибка при сохранении в БД")
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "REPLACE INTO users (user_id, role, scam_percent) VALUES (%s, %s, %s)",
+            (str(target_id), role_text, scam_percent)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Error as e:
+        bot.reply_to(msg, f"Ошибка БД: {e}")
         return
 
     if role_text == "скамер":
@@ -523,156 +278,265 @@ def handle_add_role(msg):
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("вынести"))
 def handle_remove_user(msg):
     chats.add(msg.chat.id)
-    caller_role = get_user_role(msg.from_user.id, msg.from_user.username)
+    caller_role = get_role(msg.from_user.id)
 
     if msg.chat.type != "private":
         if msg.from_user.id not in OWNER_IDS and caller_role not in ["гарант", "владелец чата"]:
             return
 
     if not msg.reply_to_message:
-        bot.reply_to(msg, "❌ Ответьте на сообщение пользователя")
+        bot.reply_to(msg, "Ответьте на сообщение пользователя, которого хотите вынести.")
         return
-    
+
     target = msg.reply_to_message.from_user
     target_id = target.id
-    target_username = target.username
-    profile_link = format_user_profile(target.id, target.username, target.first_name)
+    profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
 
-    # Проверка на владельца
-    if target_username and target_username.lower() in [k.lower() for k in OWNER_USERNAMES.keys()]:
+    if isinstance(target_id, int) and target_id in OWNER_IDS:
         bot.reply_to(msg, "❌ Нельзя выносить владельца.")
+        return
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE user_id = %s", (str(target_id),))
+        if cursor.rowcount > 0:
+            conn.commit()
+            bot.reply_to(msg, f"✅ {profile_link} удален из базы")
+        else:
+            bot.reply_to(msg, f"❌ {profile_link} не найден")
+        cursor.close()
+        conn.close()
+    except Error as e:
+        bot.reply_to(msg, f"Ошибка БД: {e}")
+
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("ип"))
+def handle_change_scam_percent(msg):
+    # Проверяем, что команду использует только владелец
+    if msg.from_user.id not in OWNER_IDS:
+        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
+        return
+        
+    if not msg.reply_to_message:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя, которому хотите изменить процент.")
+        return
+    parts = msg.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        bot.reply_to(msg, "Пример: ип 30 (в ответ на сообщение)")
+        return
+
+    target = msg.reply_to_message.from_user
+    target_id = target.id
+    percent = parts[1] + "%"
+    profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Сначала проверяем, есть ли пользователь в базе
+        cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (str(target_id),))
+        user_exists = cursor.fetchone()
+        
+        if user_exists:
+            # Обновляем существующего пользователя
+            cursor.execute(
+                "UPDATE users SET scam_percent = %s WHERE user_id = %s",
+                (percent, str(target_id))
+            )
+        else:
+            # Создаем нового пользователя с кастомным процентом
+            cursor.execute(
+                "INSERT INTO users (user_id, role, scam_percent) VALUES (%s, %s, %s)",
+                (str(target_id), "непроверенный", percent)
+            )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        bot.reply_to(msg, f"✅ Процент скама для {profile_link} установлен на {percent}")
+    except Error as e:
+        bot.reply_to(msg, f"Ошибка БД: {e}")
+
+def get_all_bot_chats():
+    """Получает все чаты из базы данных где бот когда-либо был активен"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        # Создаем таблицу для хранения всех чатов если её нет
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_chats (
+            chat_id VARCHAR(100) PRIMARY KEY,
+            chat_title VARCHAR(255),
+            chat_type VARCHAR(50),
+            last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )""")
+        conn.commit()
+        
+        # Получаем все чаты из базы данных
+        cursor.execute("SELECT chat_id FROM bot_chats")
+        db_chats = [row[0] for row in cursor.fetchall()]
+        
+        cursor.close()
+        conn.close()
+        
+        # Объединяем с текущими активными чатами
+        all_chats = set(db_chats + [str(chat_id) for chat_id in chats])
+        return all_chats
+    except Exception as e:
+        print(f"Ошибка при получении чатов из БД: {e}")
+        return set(str(chat_id) for chat_id in chats)
+
+def save_chat_to_db(chat_id, chat_title=None, chat_type=None):
+    """Сохраняет информацию о чате в базу данных"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_chats (
+            chat_id VARCHAR(100) PRIMARY KEY,
+            chat_title VARCHAR(255),
+            chat_type VARCHAR(50),
+            last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )""")
+        
+        cursor.execute("""
+        REPLACE INTO bot_chats (chat_id, chat_title, chat_type) 
+        VALUES (%s, %s, %s)
+        """, (str(chat_id), chat_title, chat_type))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Ошибка при сохранении чата в БД: {e}")
+
+# --- Добавленная команда глобального сообщения ---
+@bot.message_handler(commands=["гс"])
+def handle_global_message(msg):
+    if msg.from_user.id not in OWNER_IDS:
+        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
+        return
+
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(msg, "❗️ Использование: /гс текст_сообщения")
+        return
+
+    message_to_send = parts[1]
+    count = 0
+    failed = 0
+
+    # Получаем все возможные чаты
+    all_possible_chats = get_all_bot_chats()
+    
+    bot.reply_to(msg, f"🔄 Начинаю отправку глобального сообщения в {len(all_possible_chats)} чат(ов)...")
+
+    # Отправляем во все найденные чаты
+    for chat_id in all_possible_chats:
+        try:
+            # Преобразуем в int если возможно
+            try:
+                chat_id_int = int(chat_id)
+            except:
+                chat_id_int = chat_id
+                
+            # Проверяем, что бот все еще есть в чате
+            member = bot.get_chat_member(chat_id_int, bot.get_me().id)
+            if member.status in ['member', 'administrator', 'creator']:
+                bot.send_message(chat_id_int, f"📢 <b>Глобальное сообщение:</b>\n{message_to_send}")
+                count += 1
+                
+                # Обновляем информацию о чате
+                try:
+                    chat_info = bot.get_chat(chat_id_int)
+                    save_chat_to_db(chat_id_int, chat_info.title, chat_info.type)
+                except:
+                    save_chat_to_db(chat_id_int)
+            else:
+                failed += 1
+                
+        except Exception as e:
+            print(f"Не удалось отправить в чат {chat_id}: {e}")
+            failed += 1
+            # Удаляем из активных чатов если бот больше не участник
+            if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
+                chats.discard(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id)
+
+    bot.send_message(msg.chat.id, f"✅ Глобальное сообщение отправлено!\n📊 Успешно: {count} чат(ов)\n❌ Ошибок: {failed}")
+
+# --- Команда для проверки активных чатов ---
+@bot.message_handler(commands=["чаты"])
+def handle_list_chats(msg):
+    if msg.from_user.id not in OWNER_IDS:
+        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
         return
     
-    if target_id and target_id in OWNER_IDS:
-        bot.reply_to(msg, "❌ Нельзя выносить владельца.")
-        return
-
-    if delete_user(target_id, target_username):
-        bot.reply_to(msg, f"✅ {profile_link} удален из базы")
+    active_chats = []
+    inactive_chats = []
+    
+    for chat_id in chats.copy():
+        try:
+            chat_info = bot.get_chat(chat_id)
+            bot.get_chat_member(chat_id, bot.get_me().id)
+            active_chats.append(f"• {chat_info.title or 'Приватный чат'} (ID: {chat_id})")
+        except Exception as e:
+            inactive_chats.append(chat_id)
+            if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
+                chats.discard(chat_id)
+    
+    response = f"📊 <b>Статистика чатов:</b>\n\n"
+    response += f"✅ <b>Активные чаты ({len(active_chats)}):</b>\n"
+    if active_chats:
+        response += "\n".join(active_chats[:20])  # Показываем максимум 20 чатов
+        if len(active_chats) > 20:
+            response += f"\n... и еще {len(active_chats) - 20} чат(ов)"
     else:
-        bot.reply_to(msg, f"❌ {profile_link} не найден")
+        response += "Нет активных чатов"
+    
+    if inactive_chats:
+        response += f"\n\n❌ <b>Неактивные чаты ({len(inactive_chats)}):</b> удалены из списка"
+    
+    bot.reply_to(msg, response)
+
+# ----------------------------------------------
 
 @bot.message_handler(content_types=['new_chat_members'])
 def on_new_members(message):
     chats.add(message.chat.id)
+    # Сохраняем информацию о чате в базу данных
+    save_chat_to_db(message.chat.id, message.chat.title, message.chat.type)
+    
     for user in message.new_chat_members:
-        role = get_user_role(user.id, user.username)
-        risk = get_risk(role)
+        role = get_role(user.id)
+        risk = get_risk(user.id)
+        profile_link = f"<a href='tg://user?id={user.id}'>{user.first_name}</a>"
         if role == "непроверенный":
             bot.send_message(
                 message.chat.id,
-                f"🚨 Новый пользователь <a href='tg://user?id={user.id}'>{user.first_name}</a>\n"
-                f"Роль: <code>{role}</code>\n📊 Риск: <code>{risk}</code>"
+                f"🚨 Новый пользователь {profile_link}\n"
+                f"Роль: {role}\n📊 Риск: {risk}"
             )
 
 @bot.message_handler(func=lambda msg: msg.chat.type in ["group", "supergroup"])
 def auto_check_group(msg):
     chats.add(msg.chat.id)
+    # Сохраняем информацию о чате в базу данных
+    save_chat_to_db(msg.chat.id, msg.chat.title, msg.chat.type)
+    
     user = msg.from_user
-    role = get_user_role(user.id, user.username)
+    role = get_role(user.id)
     if role == "скамер":
-        bot.reply_to(msg, f"⚠️ Осторожно! <a href='tg://user?id={user.id}'>{user.first_name}</a> — <b>СКАМЕР</b>.")
-
-@bot.message_handler(func=lambda msg: msg.chat.type == "private" and msg.from_user.id in edit_sessions)
-def handle_edit_input(msg):
-    """Обработчик ввода для редактирования в админ-панели"""
-    user_id = msg.from_user.id
-    session = edit_sessions.get(user_id, {})
-    
-    if session.get("waiting_for_id"):
-        # Получили ID для редактирования
-        target_input = msg.text.strip()
-        
-        # Проверяем существование пользователя в БД
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            if target_input.startswith("@"):
-                cursor.execute("SELECT user_id, role, scam_percent FROM users WHERE LOWER(user_id) = LOWER(%s)", (target_input,))
-            else:
-                cursor.execute("SELECT user_id, role, scam_percent FROM users WHERE user_id = %s", (target_input,))
-            
-            result = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            if result:
-                user_db_id, current_role, current_percent = result
-                session["target_id"] = user_db_id
-                session["waiting_for_id"] = False
-                edit_sessions[user_id] = session
-                
-                text = f"👤 <b>Редактирование пользователя</b>\n\nID: <code>{user_db_id}</code>\nТекущая роль: <code>{current_role}</code>\nТекущий процент: <code>{current_percent}</code>\n\nВыберите действие:"
-                
-                try:
-                    bot.edit_message_text(text, msg.chat.id, session["message_id"], 
-                                         reply_markup=create_edit_keyboard(), parse_mode="HTML")
-                except:
-                    bot.send_message(msg.chat.id, text, reply_markup=create_edit_keyboard(), parse_mode="HTML")
-            else:
-                text = f"❌ Пользователь <code>{target_input}</code> не найден в базе данных"
-                try:
-                    bot.edit_message_text(text, msg.chat.id, session["message_id"], 
-                                         reply_markup=create_admin_keyboard(), parse_mode="HTML")
-                except:
-                    bot.send_message(msg.chat.id, text, reply_markup=create_admin_keyboard(), parse_mode="HTML")
-                del edit_sessions[user_id]
-        
-        except Exception as e:
-            print(f"Ошибка при поиске пользователя: {e}")
-            text = "❌ Ошибка при поиске пользователя"
-            try:
-                bot.edit_message_text(text, msg.chat.id, session["message_id"], 
-                                     reply_markup=create_admin_keyboard(), parse_mode="HTML")
-            except:
-                bot.send_message(msg.chat.id, text, reply_markup=create_admin_keyboard(), parse_mode="HTML")
-            del edit_sessions[user_id]
-    
-    elif session.get("waiting_for_percent"):
-        # Получили новый процент
-        new_percent = msg.text.strip()
-        
-        if not new_percent.endswith("%"):
-            new_percent += "%"
-        
-        target_id = session["target_id"]
-        
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET scam_percent = %s WHERE user_id = %s", (new_percent, target_id))
-            success = cursor.rowcount > 0
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            if success:
-                text = f"✅ <b>Процент обновлен</b>\n\nID: <code>{target_id}</code>\nНовый процент: <code>{new_percent}</code>"
-            else:
-                text = "❌ Ошибка при обновлении процента"
-            
-            del edit_sessions[user_id]
-            
-            try:
-                bot.edit_message_text(text, msg.chat.id, session["message_id"], 
-                                     reply_markup=create_admin_keyboard(), parse_mode="HTML")
-            except:
-                bot.send_message(msg.chat.id, text, reply_markup=create_admin_keyboard(), parse_mode="HTML")
-        
-        except Exception as e:
-            print(f"Ошибка при обновлении процента: {e}")
-            text = "❌ Ошибка при обновлении процента"
-            try:
-                bot.edit_message_text(text, msg.chat.id, session["message_id"], 
-                                     reply_markup=create_admin_keyboard(), parse_mode="HTML")
-            except:
-                bot.send_message(msg.chat.id, text, reply_markup=create_admin_keyboard(), parse_mode="HTML")
-            del edit_sessions[user_id]
+        profile_link = f"<a href='tg://user?id={user.id}'>{user.first_name}</a>"
+        bot.reply_to(msg, f"⚠️ Осторожно! {profile_link} — СКАМЕР.")
 
 @bot.message_handler(func=lambda msg: True)
 def register_chat(msg):
     chats.add(msg.chat.id)
+    # Сохраняем информацию о чате в базу данных
+    save_chat_to_db(msg.chat.id, getattr(msg.chat, 'title', None), msg.chat.type)
+    
+    # Сохраняем username пользователя если он есть
+    if msg.from_user.username:
+        save_username_mapping(msg.from_user.id, msg.from_user.username)
 
 print("Бот запускается...")
 try:
