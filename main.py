@@ -13,30 +13,73 @@ DB_NAME = "sql8792761"
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 chats = set()
 
+import time
+
 def get_connection():
-    return mysql.connector.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        charset="utf8mb4"
-    )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = mysql.connector.connect(
+                host=DB_HOST,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                database=DB_NAME,
+                charset="utf8mb4",
+                autocommit=True,
+                connection_timeout=10,
+                buffered=True
+            )
+            return conn
+        except Error as e:
+            print(f"Попытка подключения {attempt + 1}/{max_retries} неудачна: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            else:
+                raise e
 
 def init_db():
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id VARCHAR(100) PRIMARY KEY,
-            role VARCHAR(50) DEFAULT 'непроверенный',
-            scam_percent VARCHAR(10) DEFAULT '50%'
-        )""")
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Error as e:
-        print(f"Ошибка при создании таблицы: {e}")
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            print(f"Попытка инициализации БД {attempt + 1}/{max_retries}...")
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Создаем таблицу пользователей
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id VARCHAR(100) PRIMARY KEY,
+                role VARCHAR(50) DEFAULT 'непроверенный',
+                scam_percent VARCHAR(10) DEFAULT '50%'
+            )""")
+            
+            # Создаем таблицу для username
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS usernames (
+                user_id VARCHAR(100) PRIMARY KEY,
+                username VARCHAR(100)
+            )""")
+            
+            # Создаем таблицу для чатов
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_chats (
+                chat_id VARCHAR(100) PRIMARY KEY,
+                chat_title VARCHAR(255),
+                chat_type VARCHAR(50),
+                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )""")
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print("✅ База данных успешно инициализирована!")
+            return
+        except Error as e:
+            print(f"Ошибка при создании таблицы (попытка {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+            else:
+                print("❌ Не удалось инициализировать базу данных после всех попыток")
 
 init_db()
 
@@ -44,15 +87,17 @@ def get_risk(user_id):
     try:
         if isinstance(user_id, int) and user_id in OWNER_IDS:
             return "0%"
+        
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT role, scam_percent FROM users WHERE user_id = %s", (str(user_id),))
         result = cursor.fetchone()
-        cursor.close()
-        conn.close()
         
         if result:
             role, scam_percent = result
+            cursor.close()
+            conn.close()
+            
             # Если есть кастомный процент, используем его
             if scam_percent and scam_percent != "50%":
                 return scam_percent
@@ -67,24 +112,28 @@ def get_risk(user_id):
             }
             return risks.get(role, "50%")
         else:
+            cursor.close()
+            conn.close()
             return "50%"
     except Exception as e:
-        print(f"Ошибка при получении риска: {e}")
+        print(f"Ошибка при получении риска для {user_id}: {e}")
         return "50%"
 
 def get_role(user_id):
     try:
         if isinstance(user_id, int) and user_id in OWNER_IDS:
             return "владелец"
+        
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
         result = cursor.fetchone()
         cursor.close()
         conn.close()
+        
         return result[0] if result and result[0] else "непроверенный"
     except Exception as e:
-        print(f"Ошибка при получении роли: {e}")
+        print(f"Ошибка при получении роли для {user_id}: {e}")
         return "непроверенный"
 
 @bot.message_handler(commands=["start"])
@@ -143,22 +192,15 @@ def save_username_mapping(user_id, username):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # Создаем таблицу для хранения username если её нет
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS usernames (
-            user_id VARCHAR(100) PRIMARY KEY,
-            username VARCHAR(100)
-        )""")
         # Сохраняем или обновляем username
         cursor.execute(
             "REPLACE INTO usernames (user_id, username) VALUES (%s, %s)",
             (str(user_id), username)
         )
-        conn.commit()
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"Ошибка при сохранении username: {e}")
+        print(f"Ошибка при сохранении username для {user_id}: {e}")
 
 def find_user_by_username(username):
     """Ищет пользователя по username в базе данных"""
@@ -172,7 +214,7 @@ def find_user_by_username(username):
         conn.close()
         return result[0] if result else None
     except Exception as e:
-        print(f"Ошибка при поиске username в БД: {e}")
+        print(f"Ошибка при поиске username {username} в БД: {e}")
         return None
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
@@ -362,15 +404,6 @@ def get_all_bot_chats():
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        # Создаем таблицу для хранения всех чатов если её нет
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bot_chats (
-            chat_id VARCHAR(100) PRIMARY KEY,
-            chat_title VARCHAR(255),
-            chat_type VARCHAR(50),
-            last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )""")
-        conn.commit()
         
         # Получаем все чаты из базы данных
         cursor.execute("SELECT chat_id FROM bot_chats")
@@ -391,23 +424,16 @@ def save_chat_to_db(chat_id, chat_title=None, chat_type=None):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS bot_chats (
-            chat_id VARCHAR(100) PRIMARY KEY,
-            chat_title VARCHAR(255),
-            chat_type VARCHAR(50),
-            last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )""")
         
         cursor.execute("""
         REPLACE INTO bot_chats (chat_id, chat_title, chat_type) 
         VALUES (%s, %s, %s)
         """, (str(chat_id), chat_title, chat_type))
-        conn.commit()
+        
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"Ошибка при сохранении чата в БД: {e}")
+        print(f"Ошибка при сохранении чата {chat_id} в БД: {e}")
 
 # --- Добавленная команда глобального сообщения ---
 @bot.message_handler(commands=["гс"])
