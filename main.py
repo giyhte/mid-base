@@ -1,5 +1,6 @@
 import telebot
 import mysql.connector
+from keep_alive import keep_alive
 from mysql.connector import Error
 
 BOT_TOKEN = "8363145008:AAEM6OSKNRjX3SDU6yINZwbMOEcsaOQVdiI"
@@ -309,9 +310,22 @@ def handle_add_role(msg):
 
     if role_text == "скамер":
         alert = f"⚠️ {profile_link} занесён как <b>СКАМЕР</b>!"
-        for chat_id in chats:
+        
+        # Отправляем во все возможные чаты
+        all_possible_chats = get_all_bot_chats()
+        for chat_id in all_possible_chats:
             try:
-                bot.send_message(chat_id, alert)
+                # Преобразуем в int если возможно
+                try:
+                    chat_id_int = int(chat_id)
+                except:
+                    chat_id_int = chat_id
+                    
+                # Проверяем, что бот все еще есть в чате
+                member = bot.get_chat_member(chat_id_int, bot.get_me().id)
+                if member.status in ['member', 'administrator', 'creator']:
+                    bot.send_message(chat_id_int, alert)
+                    
             except Exception as e:
                 print(f"Не удалось отправить в чат {chat_id}: {e}")
 
@@ -564,8 +578,18 @@ def register_chat(msg):
     if msg.from_user.username:
         save_username_mapping(msg.from_user.id, msg.from_user.username)
 
-print("Бот запускается...")
-try:
-    bot.infinity_polling()
-except Exception as e:
-    print(f"Ошибка при запуске бота: {e}")
+def run_bot():
+    """Функция для запуска бота с автоматическим перезапуском"""
+    keep_alive()  # Запускаем веб-сервер для поддержания активности в Replit
+    while True:
+        try:
+            print("Бот запускается...")
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"❌ Ошибка при работе бота: {e}")
+            print("🔄 Перезапуск через 5 секунд...")
+            time.sleep(5)
+            print("🚀 Попытка перезапуска бота...")
+
+# Запускаем бота с автоматическим перезапуском
+run_bot()
