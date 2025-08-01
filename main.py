@@ -1,6 +1,5 @@
 import telebot
 import mysql.connector
-from keep_alive import keep_alive
 from mysql.connector import Error
 
 BOT_TOKEN = "8363145008:AAEM6OSKNRjX3SDU6yINZwbMOEcsaOQVdiI"
@@ -46,6 +45,13 @@ def init_db():
             conn = get_connection()
             cursor = conn.cursor()
             
+            # Удаляем старую таблицу permissions если она существует с неправильной кодировкой
+            try:
+                cursor.execute("DROP TABLE IF EXISTS user_permissions")
+                print("Старая таблица user_permissions удалена")
+            except:
+                pass
+            
             # Создаем таблицу пользователей
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -69,6 +75,18 @@ def init_db():
                 chat_type VARCHAR(50),
                 last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )""")
+            
+            # Создаем таблицу для прав пользователей на команды
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                command_name VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                has_permission BOOLEAN DEFAULT TRUE,
+                granted_by VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_user_command (user_id, command_name)
+            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci""")
             
             conn.commit()
             cursor.close()
@@ -107,6 +125,7 @@ def get_risk(user_id):
                 "владелец": "0%",
                 "гарант": "0%",
                 "владелец чата": "10%",
+                "проверенный": "10%",
                 "отказ от гаранта": "80%",
                 "скамер": "100%",
                 "непроверенный": "50%"
@@ -143,25 +162,40 @@ def start_command(msg):
 
 @bot.message_handler(commands=["help"])
 def help_command(msg):
-    if msg.from_user.id in OWNER_IDS:
-        text = (
-            "📘 Команды:\n"
-            "— чек (в ответ на сообщение или без параметров)\n"
-            "— занести (в ответ на сообщение)\n"
-            "— вынести (в ответ на сообщение)\n"
-            "— ип 30 (в ответ на сообщение)\n"
-            "— /гс (текст сообщения) — отправить глобальное сообщение во все чаты\n"
-            "— /чаты — посмотреть список активных чатов\n"
-            "\nБот активен и работает ✅"
-        )
-    else:
-        text = (
-            "📘 Команды:\n"
-            "— чек (в ответ на сообщение или без параметров)\n"
-            "— занести (в ответ на сообщение)\n"
-            "— вынести (в ответ на сообщение)\n"
-            "\nБот активен и работает ✅"
-        )
+    user_id = msg.from_user.id
+    
+    # Базовые команды доступные всем
+    text = (
+        "📘 Команды:\n"
+        "— чек (в ответ на сообщение, без параметров или @username)\n"
+    )
+    
+    # Проверяем доступность каждой команды для пользователя
+    if has_command_permission(user_id, "занести"):
+        text += "— занести роль (в ответ на сообщение или @username роль)\n"
+    
+    if has_command_permission(user_id, "вынести"):
+        text += "— вынести (в ответ на сообщение или @username)\n"
+    
+    if has_command_permission(user_id, "ип"):
+        text += "— ип 30 (в ответ на сообщение)\n"
+    
+    # Команды только для владельцев
+    if user_id in OWNER_IDS:
+        text += "— +кмд команда (в ответ на сообщение) — выдать права\n"
+        text += "— -кмд команда (в ответ на сообщение) — отнять права\n"
+        text += "— /гс (текст сообщения) — отправить глобальное сообщение во все чаты\n"
+        text += "— /чаты — посмотреть список активных чатов\n"
+    
+    text += (
+        "\nДоступные роли: скамер, гарант, владелец_чата, проверенный, отказ_от_гаранта\n"
+        "\nПримеры с username:\n"
+        "— чек @username\n"
+        "— занести @username проверенный\n"
+        "— вынести @username\n"
+        "\nБот активен и работает ✅"
+    )
+    
     bot.reply_to(msg, text)
 
 def get_user_by_username(username):
@@ -218,27 +252,128 @@ def find_user_by_username(username):
         print(f"Ошибка при поиске username {username} в БД: {e}")
         return None
 
+def has_command_permission(user_id, command_name):
+    """Проверяет, есть ли у пользователя право на выполнение команды"""
+    try:
+        # Владельцы всегда имеют все права
+        if isinstance(user_id, int) and user_id in OWNER_IDS:
+            return True
+            
+        # Конвертируем все в строки для избежания проблем с кодировкой
+        user_id_str = str(user_id)
+        command_name_str = str(command_name)
+            
+        # Сначала проверяем явно выданные права в базе данных
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT has_permission FROM user_permissions WHERE CAST(user_id AS CHAR) = %s AND CAST(command_name AS CHAR) = %s",
+            (user_id_str, command_name_str)
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        # Если найдена явная запись о правах, используем её
+        if result is not None:
+            return bool(result[0])
+        
+        # Если явных прав нет, проверяем права по роли (только для базовых команд)
+        role = get_role(user_id)
+        if role in ["гарант", "владелец чата"] and command_name_str in ["занести", "вынести"]:
+            return True
+        
+        # Владельцы имеют право на команду "ип" по умолчанию
+        if role == "владелец" and command_name_str == "ип":
+            return True
+            
+        # Если нет ни явных прав, ни прав по роли - отказываем
+        return False
+        
+    except Exception as e:
+        print(f"Ошибка при проверке прав для {user_id}, команда {command_name}: {e}")
+        return False
+
+def grant_command_permission(user_id, command_name, granted_by, has_permission=True):
+    """Выдает или отнимает право на команду у пользователя"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            REPLACE INTO user_permissions (user_id, command_name, has_permission, granted_by, granted_at)
+            VALUES (%s, %s, %s, %s, NOW())
+        """, (str(user_id), command_name, has_permission, str(granted_by)))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Ошибка при изменении прав для {user_id}, команда {command_name}: {e}")
+        return False
+
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
 def handle_check(msg):
     chats.add(msg.chat.id)
     
-    # Проверяем по reply или автора сообщения
-    user = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
-    user_id = user.id
-    user_name = user.first_name
-    role = get_role(user_id)
-    risk = get_risk(user_id)
-    profile_link = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
+    parts = msg.text.strip().split()
     
-    # Сохраняем username если он есть
-    if user.username:
-        save_username_mapping(user_id, user.username)
+    # Если указан username
+    if len(parts) > 1 and parts[1].startswith('@'):
+        username = parts[1]
+        
+        # Сначала ищем в нашей базе данных
+        user_id = find_user_by_username(username.lstrip('@'))
+        
+        if user_id:
+            # Нашли в базе данных
+            role = get_role(user_id)
+            risk = get_risk(user_id)
+            profile_link = f"<a href='tg://user?id={user_id}'>{username}</a>"
+            
+            text = (
+                f"👤 Профиль: {profile_link}\n"
+                f"🔹 Роль: {role}\n"
+                f"📊 Вероятность скама: {risk}"
+            )
+        else:
+            # Пытаемся найти через API Telegram
+            user_info = get_user_by_username(username)
+            if user_info:
+                user_id = user_info.id
+                user_name = user_info.first_name
+                role = get_role(user_id)
+                risk = get_risk(user_id)
+                profile_link = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
+                
+                # Сохраняем связь username -> user_id
+                save_username_mapping(user_id, username.lstrip('@'))
+                
+                text = (
+                    f"👤 Профиль: {profile_link}\n"
+                    f"🔹 Роль: {role}\n"
+                    f"📊 Вероятность скама: {risk}"
+                )
+            else:
+                text = f"❌ Пользователь {username} не найден"
+    else:
+        # Проверяем по reply или автора сообщения
+        user = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
+        user_id = user.id
+        user_name = user.first_name
+        role = get_role(user_id)
+        risk = get_risk(user_id)
+        profile_link = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
+        
+        # Сохраняем username если он есть
+        if user.username:
+            save_username_mapping(user_id, user.username)
 
-    text = (
-        f"👤 Профиль: {profile_link}\n"
-        f"🔹 Роль: {role}\n"
-        f"📊 Вероятность скама: {risk}"
-    )
+        text = (
+            f"👤 Профиль: {profile_link}\n"
+            f"🔹 Роль: {role}\n"
+            f"📊 Вероятность скама: {risk}"
+        )
+    
     bot.reply_to(msg, text)
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("занести"))
@@ -246,32 +381,68 @@ def handle_add_role(msg):
     chats.add(msg.chat.id)
     caller_role = get_role(msg.from_user.id)
 
-    if msg.chat.type != "private":
-        if msg.from_user.id not in OWNER_IDS and caller_role not in ["гарант", "владелец чата"]:
-            return
-
-    if not msg.reply_to_message:
-        bot.reply_to(msg, "Ответьте на сообщение пользователя, которого хотите занести.")
+    # Проверяем права на команду
+    if not has_command_permission(msg.from_user.id, "занести"):
+        bot.reply_to(msg, "❌ У вас нет прав на использование команды 'занести'.")
         return
 
     parts = msg.text.strip().split()
     if len(parts) < 2:
-        bot.reply_to(msg, "Пример: занести скамер (в ответ на сообщение)")
+        bot.reply_to(msg, "Пример: занести скамер (в ответ на сообщение) или занести @username скамер")
         return
 
-    role = parts[1].lower()
-    target = msg.reply_to_message.from_user
-    target_id = target.id
-    target_name = target.first_name
-    profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+    # Проверяем, указан ли username
+    if len(parts) >= 3 and parts[1].startswith('@'):
+        username = parts[1]
+        role = parts[2].lower()
+        
+        # Ищем пользователя по username
+        user_id = find_user_by_username(username.lstrip('@'))
+        
+        if not user_id:
+            # Пытаемся найти через API
+            user_info = get_user_by_username(username)
+            if user_info:
+                user_id = user_info.id
+                target_name = user_info.first_name
+                save_username_mapping(user_id, username.lstrip('@'))
+            else:
+                bot.reply_to(msg, f"❌ Пользователь {username} не найден")
+                return
+        else:
+            # Если нашли в базе, получаем имя через API для актуальности
+            try:
+                user_info = bot.get_chat(int(user_id))
+                target_name = user_info.first_name
+            except:
+                target_name = username
+            
+        target_id = int(user_id)
+        profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+        
+    elif msg.reply_to_message:
+        # Работаем через reply
+        role = parts[1].lower()
+        target = msg.reply_to_message.from_user
+        target_id = target.id
+        target_name = target.first_name
+        profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+    else:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя или укажите @username.\nПример: занести @username скамер")
+        return
 
-    allowed_roles = ["скамер", "гарант", "владелец_чата", "отказ", "отказ_от_гаранта"]
+    allowed_roles = ["скамер", "гарант", "владелец_чата", "отказ", "отказ_от_гаранта", "проверенный"]
     if role not in allowed_roles:
-        bot.reply_to(msg, "Роли: скамер, гарант, владелец_чата, отказ, отказ_от_гаранта")
+        bot.reply_to(msg, "Роли: скамер, гарант, владелец_чата, отказ, отказ_от_гаранта, проверенный")
         return
 
     if caller_role in ["гарант", "владелец чата"] and role == "гарант":
         bot.reply_to(msg, "❌ Нельзя заносить гарантов.")
+        return
+    
+    # Проверяем права на выдачу роли "проверенный"
+    if role == "проверенный" and caller_role not in ["владелец", "владелец чата"]:
+        bot.reply_to(msg, "❌ Роль 'проверенный' может выдавать только владелец или владелец чата.")
         return
 
     if isinstance(target_id, int) and target_id in OWNER_IDS:
@@ -290,6 +461,9 @@ def handle_add_role(msg):
     elif role == "гарант":
         role_text = "гарант"
         scam_percent = "0%"
+    elif role == "проверенный":
+        role_text = "проверенный"
+        scam_percent = "10%"
     else:
         role_text = role
         scam_percent = "50%"
@@ -336,17 +510,49 @@ def handle_remove_user(msg):
     chats.add(msg.chat.id)
     caller_role = get_role(msg.from_user.id)
 
-    if msg.chat.type != "private":
-        if msg.from_user.id not in OWNER_IDS and caller_role not in ["гарант", "владелец чата"]:
-            return
-
-    if not msg.reply_to_message:
-        bot.reply_to(msg, "Ответьте на сообщение пользователя, которого хотите вынести.")
+    # Проверяем права на команду
+    if not has_command_permission(msg.from_user.id, "вынести"):
+        bot.reply_to(msg, "❌ У вас нет прав на использование команды 'вынести'.")
         return
 
-    target = msg.reply_to_message.from_user
-    target_id = target.id
-    profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+    parts = msg.text.strip().split()
+    
+    # Проверяем, указан ли username
+    if len(parts) >= 2 and parts[1].startswith('@'):
+        username = parts[1]
+        
+        # Ищем пользователя по username
+        user_id = find_user_by_username(username.lstrip('@'))
+        
+        if not user_id:
+            # Пытаемся найти через API
+            user_info = get_user_by_username(username)
+            if user_info:
+                user_id = user_info.id
+                target_name = user_info.first_name
+                save_username_mapping(user_id, username.lstrip('@'))
+            else:
+                bot.reply_to(msg, f"❌ Пользователь {username} не найден")
+                return
+        else:
+            # Если нашли в базе, получаем имя через API для актуальности
+            try:
+                user_info = bot.get_chat(int(user_id))
+                target_name = user_info.first_name
+            except:
+                target_name = username
+            
+        target_id = int(user_id)
+        profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+        
+    elif msg.reply_to_message:
+        # Работаем через reply
+        target = msg.reply_to_message.from_user
+        target_id = target.id
+        profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+    else:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя или укажите @username.\nПример: вынести @username")
+        return
 
     if isinstance(target_id, int) and target_id in OWNER_IDS:
         bot.reply_to(msg, "❌ Нельзя выносить владельца.")
@@ -368,9 +574,11 @@ def handle_remove_user(msg):
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("ип"))
 def handle_change_scam_percent(msg):
-    # Проверяем, что команду использует только владелец
-    if msg.from_user.id not in OWNER_IDS:
-        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
+    chats.add(msg.chat.id)
+    
+    # Проверяем права на команду
+    if not has_command_permission(msg.from_user.id, "ип"):
+        bot.reply_to(msg, "❌ У вас нет прав на использование команды 'ип'.")
         return
         
     if not msg.reply_to_message:
@@ -503,6 +711,83 @@ def handle_global_message(msg):
 
     bot.send_message(msg.chat.id, f"✅ Глобальное сообщение отправлено!\n📊 Успешно: {count} чат(ов)\n❌ Ошибок: {failed}")
 
+# --- Команды для управления правами пользователей ---
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("+кмд"))
+def handle_grant_permission(msg):
+    if msg.from_user.id not in OWNER_IDS:
+        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
+        return
+        
+    if not msg.reply_to_message:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя, которому хотите выдать права.")
+        return
+        
+    parts = msg.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(msg, "Пример: +кмд занести (в ответ на сообщение)")
+        return
+        
+    command_name = parts[1].lower()
+    available_commands = ["занести", "вынести", "ип"]
+    
+    if command_name not in available_commands:
+        bot.reply_to(msg, f"Доступные команды: {', '.join(available_commands)}")
+        return
+        
+    target = msg.reply_to_message.from_user
+    target_id = target.id
+    target_name = target.first_name
+    profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+    
+    if isinstance(target_id, int) and target_id in OWNER_IDS:
+        bot.reply_to(msg, "❌ Владелец уже имеет все права.")
+        return
+        
+    success = grant_command_permission(target_id, command_name, msg.from_user.id, True)
+    
+    if success:
+        bot.reply_to(msg, f"✅ {profile_link} получил право на команду '{command_name}'")
+    else:
+        bot.reply_to(msg, "❌ Ошибка при выдаче прав.")
+
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("-кмд"))
+def handle_revoke_permission(msg):
+    if msg.from_user.id not in OWNER_IDS:
+        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
+        return
+        
+    if not msg.reply_to_message:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя, у которого хотите отнять права.")
+        return
+        
+    parts = msg.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(msg, "Пример: -кмд занести (в ответ на сообщение)")
+        return
+        
+    command_name = parts[1].lower()
+    available_commands = ["занести", "вынести", "ип"]
+    
+    if command_name not in available_commands:
+        bot.reply_to(msg, f"Доступные команды: {', '.join(available_commands)}")
+        return
+        
+    target = msg.reply_to_message.from_user
+    target_id = target.id
+    target_name = target.first_name
+    profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+    
+    if isinstance(target_id, int) and target_id in OWNER_IDS:
+        bot.reply_to(msg, "❌ Нельзя отнимать права у владельца.")
+        return
+        
+    success = grant_command_permission(target_id, command_name, msg.from_user.id, False)
+    
+    if success:
+        bot.reply_to(msg, f"❌ У {profile_link} отнято право на команду '{command_name}'")
+    else:
+        bot.reply_to(msg, "❌ Ошибка при отнятии прав.")
+
 # --- Команда для проверки активных чатов ---
 @bot.message_handler(commands=["чаты"])
 def handle_list_chats(msg):
@@ -578,17 +863,28 @@ def register_chat(msg):
     if msg.from_user.username:
         save_username_mapping(msg.from_user.id, msg.from_user.username)
 
+def safe_reply(msg, text):
+    """Безопасная отправка ответа с обработкой ошибок"""
+    try:
+        bot.reply_to(msg, text)
+    except Exception as e:
+        print(f"Ошибка при отправке сообщения: {e}")
+        try:
+            # Пытаемся отправить через send_message если reply_to не работает
+            bot.send_message(msg.chat.id, text)
+        except Exception as e2:
+            print(f"Не удалось отправить сообщение в чат {msg.chat.id}: {e2}")
+
 def run_bot():
     """Функция для запуска бота с автоматическим перезапуском"""
-    keep_alive()  # Запускаем веб-сервер для поддержания активности в Replit
     while True:
         try:
             print("Бот запускается...")
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+            bot.infinity_polling(timeout=20, long_polling_timeout=10, none_stop=True)
         except Exception as e:
             print(f"❌ Ошибка при работе бота: {e}")
-            print("🔄 Перезапуск через 5 секунд...")
-            time.sleep(5)
+            print("🔄 Перезапуск через 10 секунд...")
+            time.sleep(10)
             print("🚀 Попытка перезапуска бота...")
 
 # Запускаем бота с автоматическим перезапуском
