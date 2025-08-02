@@ -182,6 +182,9 @@ def help_command(msg):
         text += "— -кмд команда (в ответ на сообщение) — отнять права\n"
         text += "— /гс (текст сообщения) — отправить глобальное сообщение во все чаты\n"
         text += "— /чаты — посмотреть список активных чатов\n"
+        text += "\nСпециальные права заноса:\n"
+        text += "— заносить_скамер, заносить_гарант, заносить_владелец_чата\n"
+        text += "— заносить_отказ, заносить_проверенный\n"
 
     text += (
         "\nДоступные роли: скамер, гарант, владелец_чата, проверенный, отказ_от_гаранта\n"
@@ -434,9 +437,30 @@ def handle_add_role(msg):
         bot.reply_to(msg, "Ответьте на сообщение пользователя или укажите @username.\nПример: занести @username скамер")
         return
 
+    # Защита от самозаноса
+    if target_id == msg.from_user.id:
+        bot.reply_to(msg, "❌ Нельзя заносить самого себя в базу.")
+        return
+
     allowed_roles = ["скамер", "гарант", "владелец_чата", "отказ", "отказ_от_гаранта", "проверенный"]
     if role not in allowed_roles:
         bot.reply_to(msg, "Роли: скамер, гарант, владелец_чата, отказ, отказ_от_гаранта, проверенный")
+        return
+
+    # Проверяем специфические права на занос конкретных ролей
+    role_permission_map = {
+        "скамер": "заносить_скамер",
+        "гарант": "заносить_гарант", 
+        "владелец_чата": "заносить_владелец_чата",
+        "отказ": "заносить_отказ",
+        "отказ_от_гаранта": "заносить_отказ",
+        "проверенный": "заносить_проверенный"
+    }
+    
+    # Проверяем есть ли специфическое право на занос этой роли
+    specific_permission = role_permission_map.get(role)
+    if specific_permission and not has_command_permission(msg.from_user.id, specific_permission):
+        bot.reply_to(msg, f"❌ У вас нет прав на занос роли '{role}'. Нужно право '{specific_permission}'.")
         return
 
     if caller_role in ["гарант", "владелец чата"] and role == "гарант":
@@ -444,7 +468,7 @@ def handle_add_role(msg):
         return
 
     # Проверяем права на выдачу роли "проверенный"
-    if role == "проверенный" and caller_role not in ["владелец", "владелец чата"]:
+    if role == "проверенный" and caller_role not in ["владелец", "владелец чата"] and not has_command_permission(msg.from_user.id, "заносить_проверенный"):
         bot.reply_to(msg, "❌ Роль 'проверенный' может выдавать только владелец или владелец чата.")
         return
 
@@ -489,10 +513,12 @@ def handle_add_role(msg):
         # Создаем сообщение с кликабельной ссылкой на профиль
         if len(parts) >= 3 and parts[1].startswith('@'):
             # Если через username, создаем ссылку на профиль через ID
-            alert = f"⚠️ <a href='tg://user?id={target_id}'>Пользователь</a> (@{username.lstrip('@')}) занесён как <b>СКАМЕР</b>!"
+            username_clean = username.lstrip('@')
+            alert = f"⚠️ Осторожно! В базу занесен скамер: <a href='tg://user?id={target_id}'>@{username_clean}</a>"
         else:
-            # Если через reply, используем обычную ссылку
-            alert = f"⚠️ {profile_link} занесён как <b>СКАМЕР</b>!"
+            # Если через reply, используем имя пользователя и ссылку
+            username_text = f"@{target.username}" if hasattr(target, 'username') and target.username else target.first_name
+            alert = f"⚠️ Осторожно! В базу занесен скамер: <a href='tg://user?id={target_id}'>{username_text}</a>"
 
         # Отправляем во все возможные чаты
         all_possible_chats = get_all_bot_chats()
@@ -796,14 +822,18 @@ def handle_grant_permission(msg):
 
     parts = msg.text.strip().split()
     if len(parts) < 2:
-        bot.reply_to(msg, "Пример: +кмд занести (в ответ на сообщение)")
+        bot.reply_to(msg, "Пример: +кмд занести (в ответ на сообщение)\nИли: +кмд заносить_скамер")
         return
 
     command_name = parts[1].lower()
-    available_commands = ["занести", "вынести", "ип"]
+    available_commands = [
+        "занести", "вынести", "ип",
+        "заносить_скамер", "заносить_гарант", "заносить_владелец_чата",
+        "заносить_отказ", "заносить_проверенный"
+    ]
 
     if command_name not in available_commands:
-        bot.reply_to(msg, f"Доступные команды: {', '.join(available_commands)}")
+        bot.reply_to(msg, f"Доступные команды:\n• Основные: занести, вынести, ип\n• Специфические: заносить_скамер, заносить_гарант, заносить_владелец_чата, заносить_отказ, заносить_проверенный")
         return
 
     target = msg.reply_to_message.from_user
@@ -834,14 +864,18 @@ def handle_revoke_permission(msg):
 
     parts = msg.text.strip().split()
     if len(parts) < 2:
-        bot.reply_to(msg, "Пример: -кмд занести (в ответ на сообщение)")
+        bot.reply_to(msg, "Пример: -кмд занести (в ответ на сообщение)\nИли: -кмд заносить_скамер")
         return
 
     command_name = parts[1].lower()
-    available_commands = ["занести", "вынести", "ип"]
+    available_commands = [
+        "занести", "вынести", "ип",
+        "заносить_скамер", "заносить_гарант", "заносить_владелец_чата",
+        "заносить_отказ", "заносить_проверенный"
+    ]
 
     if command_name not in available_commands:
-        bot.reply_to(msg, f"Доступные команды: {', '.join(available_commands)}")
+        bot.reply_to(msg, f"Доступные команды:\n• Основные: занести, вынести, ип\n• Специфические: заносить_скамер, заносить_гарант, заносить_владелец_чата, заносить_отказ, заносить_проверенный")
         return
 
     target = msg.reply_to_message.from_user
