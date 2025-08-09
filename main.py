@@ -1,16 +1,23 @@
 import telebot
-import mysql.connector
-from mysql.connector import Error
+import sqlite3
 from telebot import types
 from datetime import datetime, timedelta
+import os
+from banner_generator import get_role_banner_file, get_role_banner_url
 
-BOT_TOKEN = "8363145008:AAEM6OSKNRjX3SDU6yINZwbMOEcsaOQVdiI"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 OWNER_IDS = [7537570296, 5821123636]
 
-DB_HOST = "sql8.freesqldatabase.com"
-DB_USER = "sql8792761"
-DB_PASSWORD = "1upRsp7dLm"
-DB_NAME = "sql8792761"
+DB_PATH = "bot_database.db"
+
+# Проверяем валидность токена перед созданием бота
+if not BOT_TOKEN or len(BOT_TOKEN.split(':')) != 2:
+    print("❌ Неверный формат токена бота!")
+    exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 chats = set()
@@ -21,26 +28,14 @@ scammer_warnings = {}
 import time
 
 def get_connection():
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            conn = mysql.connector.connect(
-                host=DB_HOST,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                database=DB_NAME,
-                charset="utf8mb4",
-                autocommit=True,
-                connection_timeout=10,
-                buffered=True
-            )
-            return conn
-        except Error as e:
-            print(f"Попытка подключения {attempt + 1}/{max_retries} неудачна: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                raise e
+    """Создает подключение к SQLite базе данных"""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        print(f"Ошибка подключения к БД: {e}")
+        raise e
 
 def init_db():
     max_retries = 5
@@ -50,60 +45,83 @@ def init_db():
             conn = get_connection()
             cursor = conn.cursor()
 
-            # Таблица user_permissions теперь не удаляется при перезапуске
-
             # Создаем таблицу пользователей
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id VARCHAR(100) PRIMARY KEY,
-                role VARCHAR(50) DEFAULT 'непроверенный',
-                scam_percent VARCHAR(10) DEFAULT '50%'
+                user_id TEXT PRIMARY KEY,
+                role TEXT DEFAULT 'непроверенный',
+                scam_percent TEXT DEFAULT '50%'
             )""")
 
             # Создаем таблицу для username
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS usernames (
-                user_id VARCHAR(100) PRIMARY KEY,
-                username VARCHAR(100)
+                user_id TEXT PRIMARY KEY,
+                username TEXT
             )""")
 
             # Создаем таблицу для чатов
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS bot_chats (
-                chat_id VARCHAR(100) PRIMARY KEY,
-                chat_title VARCHAR(255),
-                chat_type VARCHAR(50),
-                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                chat_id TEXT PRIMARY KEY,
+                chat_title TEXT,
+                chat_type TEXT,
+                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
 
             # Создаем таблицу для прав пользователей на команды
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_permissions (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
-                command_name VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
-                has_permission BOOLEAN DEFAULT TRUE,
-                granted_by VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                command_name TEXT,
+                has_permission INTEGER DEFAULT 1,
+                granted_by TEXT,
                 granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY unique_user_command (user_id, command_name)
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci""")
+                UNIQUE(user_id, command_name)
+            )""")
 
             # Создаем таблицу для отслеживания предупреждений о скамерах
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS scammer_warnings (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                chat_id VARCHAR(100),
-                user_id VARCHAR(100),
-                last_warning TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY unique_chat_user (chat_id, user_id)
-            ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci""")
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT,
+                user_id TEXT,
+                last_warning TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(chat_id, user_id)
+            )""")
+
+            # Создаем таблицу для отслеживания проверок пользователей
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_verifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                verified_by TEXT,
+                verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id)
+            )""")
+
+            # Создаем таблицу для счетчика просмотров профилей
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS profile_views (
+                user_id TEXT PRIMARY KEY,
+                view_count INTEGER DEFAULT 0
+            )""")
+
+            # Создаем таблицу для биографий пользователей
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_bios (
+                user_id TEXT PRIMARY KEY,
+                bio TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
 
             conn.commit()
             cursor.close()
             conn.close()
             print("✅ База данных успешно инициализирована!")
             return
-        except Error as e:
+        except Exception as e:
             print(f"Ошибка при создании таблицы (попытка {attempt + 1}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(5)
@@ -113,17 +131,18 @@ def init_db():
 init_db()
 
 def get_risk(user_id):
+    """Получает процент риска пользователя"""
     try:
         if isinstance(user_id, int) and user_id in OWNER_IDS:
             return "0%"
 
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT role, scam_percent FROM users WHERE user_id = %s", (str(user_id),))
+        cursor.execute("SELECT role, scam_percent FROM users WHERE user_id = ?", (str(user_id),))
         result = cursor.fetchone()
 
         if result:
-            role, scam_percent = result
+            role, scam_percent = result['role'], result['scam_percent']
             cursor.close()
             conn.close()
 
@@ -150,21 +169,85 @@ def get_risk(user_id):
         return "50%"
 
 def get_role(user_id):
+    """Получает роль пользователя из базы данных"""
     try:
         if isinstance(user_id, int) and user_id in OWNER_IDS:
             return "владелец"
 
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT role FROM users WHERE user_id = %s", (str(user_id),))
+        cursor.execute("SELECT role FROM users WHERE user_id = ?", (str(user_id),))
         result = cursor.fetchone()
         cursor.close()
         conn.close()
 
-        return result[0] if result and result[0] else "непроверенный"
+        return result['role'] if result and result['role'] else "непроверенный"
     except Exception as e:
         print(f"Ошибка при получении роли для {user_id}: {e}")
         return "непроверенный"
+
+def get_verification_info(user_id):
+    """Получает информацию о том, кто проверил пользователя"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT verified_by, verified_at FROM user_verifications WHERE user_id = ?", (str(user_id),))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if result:
+            return {
+                'verified_by': result['verified_by'],
+                'verified_at': result['verified_at']
+            }
+        return None
+    except Exception as e:
+        print(f"Ошибка при получении информации о проверке для {user_id}: {e}")
+        return None
+
+def increment_profile_views(user_id):
+    """Увеличивает счетчик просмотров профиля пользователя"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO profile_views (user_id, view_count)
+            VALUES (?, COALESCE((SELECT view_count FROM profile_views WHERE user_id = ?), 0) + 1)
+        """, (str(user_id), str(user_id)))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Ошибка при увеличении счетчика просмотров для {user_id}: {e}")
+
+def get_profile_views(user_id):
+    """Получает количество просмотров профиля пользователя"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT view_count FROM profile_views WHERE user_id = ?", (str(user_id),))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result['view_count'] if result else 0
+    except Exception as e:
+        print(f"Ошибка при получении счетчика просмотров для {user_id}: {e}")
+        return 0
+
+def get_user_bio(user_id):
+    """Получает биографию пользователя из базы данных"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT bio FROM user_bios WHERE user_id = ?", (str(user_id),))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return result['bio'] if result else None
+    except Exception as e:
+        print(f"Ошибка при получении биографии для {user_id}: {e}")
+        return None
 
 @bot.message_handler(commands=["start"])
 def start_command(msg):
@@ -176,85 +259,110 @@ def start_command(msg):
         bot.reply_to(msg, "👋 Привет! Я активен. Используй /help, чтобы увидеть доступные команды.")
 
 def show_detailed_profile(msg, user_id):
-    """Показывает детальный профиль пользователя в личке"""
+    """Показывает детальный профиль пользователя"""
     try:
-        # Правильно получаем роль и риск (учитывая владельцев)
-        role = get_role(user_id)
-        risk = get_risk(user_id)
-
-        # Пытаемся получить актуальную информацию через API
-        user_name = "Неизвестный пользователь"
-        username = "Не указан"
-
+        # Получаем актуальную информацию о пользователе
+        user_info = None
         try:
             user_info = bot.get_chat(int(user_id))
-            user_name = user_info.first_name or "Неизвестный пользователь"
-            if hasattr(user_info, 'last_name') and user_info.last_name:
-                user_name += f" {user_info.last_name}"
-            username = f"@{user_info.username}" if hasattr(user_info, 'username') and user_info.username else "Не указан"
         except Exception as api_error:
-            print(f"Не удалось получить данные через API для {user_id}: {api_error}")
-            # Пытаемся найти username в нашей базе
+            print(f"Не удалось получить данные пользователя через API для {user_id}: {api_error}")
+            # Пытаемся найти username в нашей базе, если API не работает
             try:
                 conn = get_connection()
                 cursor = conn.cursor()
-                cursor.execute("SELECT username FROM usernames WHERE user_id = %s", (str(user_id),))
+                cursor.execute("SELECT username FROM usernames WHERE user_id = ?", (str(user_id),))
                 result = cursor.fetchone()
-                if result and result[0]:
-                    username = f"@{result[0]}"
                 cursor.close()
                 conn.close()
+                if result and result['username']:
+                    # Создаем простой объект с нужными атрибутами
+                    class UserInfo:
+                        def __init__(self, user_id, username):
+                            self.id = int(user_id)
+                            self.username = username
+                            self.first_name = "Неизвестный"
+                    
+                    user_info = UserInfo(user_id, result['username'])
             except:
                 pass
 
-        # Создаем эмодзи и названия для статуса
+        if not user_info:
+            bot.send_message(msg.chat.id, f"❌ Не удалось найти информацию о пользователе с ID <code>{user_id}</code>.")
+            return
+
+        user_name = user_info.first_name or "Неизвестный пользователь"
+        username_display = f"@{user_info.username}" if hasattr(user_info, 'username') and user_info.username else "Не указан"
+
+        # Получаем роль, риск и информацию о проверке
+        role = get_role(user_id)
+        risk = get_risk(user_id)
+        verification_info = get_verification_info(user_id)
+
+        # Определяем текстовое представление роли и эмодзи риска
         status_emoji = get_status_emoji(role)
         status_name = get_status_name(role)
         risk_color = get_risk_color(risk)
 
-        # Получаем группы где есть пользователь и бот
-        user_groups = get_user_groups(user_id)
+        # Получаем биографию пользователя
+        user_bio = get_user_bio(user_id)
+        bio_text = user_bio if user_bio else "Биография не установлена. /bio"
 
-        # Компактный дизайн профиля
+        # Получаем время проверки
+        check_time = datetime.now().strftime('%H:%M МСК • %d %B')
+
+        # Определяем текст проверяющего
+        verified_by_text = "Не проверен"
+        if verification_info:
+            try:
+                verifier_chat = bot.get_chat(int(verification_info['verified_by']))
+                verifier_name = verifier_chat.username or verifier_chat.first_name
+                verifier_username = f"@{verifier_name}" if verifier_chat.username else verifier_name
+                verified_by_text = f"Проверен гарантом {verifier_username}"
+            except:
+                verified_by_text = f"Проверен гарантом ID: {verification_info['verified_by']}"
+
         text = (
-            f"📋 <b>ДЕТАЛЬНЫЙ ПРОФИЛЬ</b>\n\n"
-            f"👤 <b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name}</a>\n"
-            f"🔗 <b>Username:</b> {username}\n"
-            f"🆔 <b>ID пользователя:</b> <code>{user_id}</code>\n\n"
-            f"{status_emoji} <b>Статус:</b> {status_name}\n"
-            f"{risk_color} <b>Процент риска:</b> {risk}\n\n"
+            f"ℹ️ | {user_name} | <code>{user_id}</code>\n"
+            f"🗓 | Дата проверки: {check_time}\n\n"
+            f"{status_emoji} | Статус: {status_name} |\n"
+            f"{risk_color} | Процент скама: {risk} |\n"
+            f"{verified_by_text}\n\n"
+            f"📝 | О себе: {bio_text}\n\n"
+            f"👤 | Профиль: <a href='tg://user?id={user_id}'>{user_name}</a>"
         )
 
-        # Информация о группах с компактным дизайном
-        if user_groups:
-            text += f"📚 Общие группы ({len(user_groups)} шт.):\n\n"
-            for i, group in enumerate(user_groups[:10], 1):  # Показываем максимум 10 групп
-                # Исправляем генерацию ссылок на группы
-                chat_id = group['chat_id']
-                if str(chat_id).startswith('-100'):
-                    # Для супергрупп убираем -100 и используем полученный ID
-                    clean_id = str(chat_id)[4:]
-                    group_link = f"https://t.me/c/{clean_id}/1"
-                else:
-                    # Для обычных групп
-                    group_link = f"tg://resolve?domain={abs(int(chat_id))}"
+        # Увеличиваем счетчик просмотров профиля
+        increment_profile_views(user_id)
+        views_count = get_profile_views(user_id)
+        text += f"       👁️ {views_count}\n"
+        text += f"📅 Последняя активность: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-                group_title = group['title'] or f"Группа {chat_id}"
-                # Ограничиваем длину названия группы
-                if len(group_title) > 30:
-                    group_title = group_title[:27] + "..."
-                text += f"  {i}. <a href='{group_link}'>{group_title}</a>\n"
+        # Создаем кнопку "Профиль"
+        markup = types.InlineKeyboardMarkup()
+        profile_button = types.InlineKeyboardButton(
+            "📋 Подробный профиль",
+            url=f"https://t.me/{bot.get_me().username}?start=profile_{user_id}"
+        )
+        markup.add(profile_button)
 
-            if len(user_groups) > 10:
-                text += f"\n... и еще {len(user_groups) - 10} групп\n"
-        else:
-            text += f"📚 Общие группы: не обнаружены\n"
+        # Добавляем баннер в текст через HTML ссылку
+        banner_url = get_role_banner_url(role)
+        if banner_url:
+            text += f'\n<a href="{banner_url}">&#8203;</a>'
 
-        text += f"\n💡 <i>Данные актуальны на момент запроса</i>"
-
-        bot.send_message(msg.chat.id, text)
+        # Отправляем сообщение с встроенным баннером
+        try:
+            bot.send_message(msg.chat.id, text, reply_markup=markup, parse_mode="HTML")
+        except Exception as e:
+            print(f"Ошибка при отправке сообщения: {e}")
+            try:
+                bot.send_message(msg.chat.id, text, reply_markup=markup, parse_mode="HTML")
+            except:
+                bot.send_message(msg.chat.id, "❌ Ошибка при отображении профиля")
 
     except Exception as e:
+        print(f"Критическая ошибка при отображении профиля {user_id}: {e}")
         error_text = (
             f"❌ <b>ОШИБКА ЗАГРУЗКИ ПРОФИЛЯ</b>\n\n"
             f"Не удалось получить детальную информацию о пользователе <code>{user_id}</code>\n\n"
@@ -276,7 +384,8 @@ def get_user_groups(user_id):
         conn.close()
 
         user_groups = []
-        for chat_id, chat_title in bot_groups:
+        for row in bot_groups:
+            chat_id, chat_title = row['chat_id'], row['chat_title']
             try:
                 # Проверяем, есть ли пользователь в этой группе
                 member = bot.get_chat_member(int(chat_id), int(user_id))
@@ -311,7 +420,7 @@ def help_command(msg):
 
     # Базовые команды доступные всем
     text = (
-        "📘 Команды:\n"
+        "📘 <b>Доступные команды:</b>\n"
         "— чек (в ответ на сообщение, без параметров или @username)\n"
         "— гаранты (показать всех гарантов)\n"
     )
@@ -326,16 +435,25 @@ def help_command(msg):
     if has_command_permission(user_id, "ип"):
         text += "— ип 30 (в ответ на сообщение)\n"
 
+    # Команда проверки для гарантов и владельцев
+    user_role = get_role(user_id)
+    if user_role in ["гарант", "владелец чата", "владелец"] or user_id in OWNER_IDS:
+        text += "— проверен (в ответ на сообщение или @username) — отметить как проверенного\n"
+
     # Команды только для владельцев
     if user_id in OWNER_IDS:
         text += "— +кмд команда (в ответ на сообщение) — выдать права\n"
         text += "— -кмд команда (в ответ на сообщение) — отнять права\n"
         text += "— /гс (текст сообщения) — отправить глобальное сообщение во все чаты\n"
         text += "— /чаты — посмотреть список активных чатов\n"
-        text += "— сетка бан (в ответ на сообщение или @username) — забанить во всех чатах\n"
-        text += "\nСпециальные права заноса:\n"
-        text += "— заносить_скамер, заносить_гарант, заносить_владелец_чата\n"
-        text += "— заносить_отказ, заносить_проверенный\n"
+        text += "— сетка_бан (для команды сетка бан)\n"
+
+    text += (
+        "\nСпециальные права заноса:\n"
+        "— заносить_скамер, заносить_гарант, заносить_владелец_чата\n"
+        "— заносить_отказ, заносить_проверенный\n"
+        "— сетка_бан (для команды сетка бан)\n"
+    )
 
     text += (
         "\nДоступные роли: скамер, гарант, владелец_чата, проверенный, отказ_от_гаранта\n"
@@ -343,6 +461,7 @@ def help_command(msg):
         "— чек @username\n"
         "— занести @username проверенный\n"
         "— вынести @username\n"
+        "— проверен @username\n"
         "\nБот активен и работает ✅"
     )
 
@@ -379,9 +498,10 @@ def save_username_mapping(user_id, username):
         cursor = conn.cursor()
         # Сохраняем или обновляем username
         cursor.execute(
-            "REPLACE INTO usernames (user_id, username) VALUES (%s, %s)",
+            "INSERT OR REPLACE INTO usernames (user_id, username) VALUES (?, ?)",
             (str(user_id), username)
         )
+        conn.commit()
         cursor.close()
         conn.close()
     except Exception as e:
@@ -393,11 +513,11 @@ def find_user_by_username(username):
         username = username.lstrip('@')
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM usernames WHERE username = %s", (username,))
+        cursor.execute("SELECT user_id FROM usernames WHERE username = ?", (username,))
         result = cursor.fetchone()
         cursor.close()
         conn.close()
-        return result[0] if result else None
+        return result['user_id'] if result else None
     except Exception as e:
         print(f"Ошибка при поиске username {username} в БД: {e}")
         return None
@@ -417,7 +537,7 @@ def has_command_permission(user_id, command_name):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT has_permission FROM user_permissions WHERE CAST(user_id AS CHAR) = %s AND CAST(command_name AS CHAR) = %s",
+            "SELECT has_permission FROM user_permissions WHERE user_id = ? AND command_name = ?",
             (user_id_str, command_name_str)
         )
         result = cursor.fetchone()
@@ -426,7 +546,7 @@ def has_command_permission(user_id, command_name):
 
         # Если найдена явная запись о правах, используем её
         if result is not None:
-            return bool(result[0])
+            return bool(result['has_permission'])
 
         # Если явных прав нет, проверяем права по роли (только для базовых команд)
         role = get_role(user_id)
@@ -450,9 +570,9 @@ def grant_command_permission(user_id, command_name, granted_by, has_permission=T
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            REPLACE INTO user_permissions (user_id, command_name, has_permission, granted_by, granted_at)
-            VALUES (%s, %s, %s, %s, NOW())
-        """, (str(user_id), command_name, has_permission, str(granted_by)))
+            INSERT OR REPLACE INTO user_permissions (user_id, command_name, has_permission, granted_by, granted_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (str(user_id), command_name, int(has_permission), str(granted_by)))
         conn.commit()
         cursor.close()
         conn.close()
@@ -500,47 +620,103 @@ def get_risk_color(risk):
     else:
         return "⚪"
 
+def get_role_banner_url(role):
+    """Возвращает URL ссылку на баннер для каждой роли"""
+    banners = {
+        "владелец": "https://i.ibb.co/5gQMW4gK/IMG-20250809-120308-934.jpg",  # Ваша ссылка для владельца
+        "гарант": "https://i.ibb.co/5gQMW4gK/IMG-20250809-120308-934.jpg",  # Замените на вашу ссылку для гаранта
+        "владелец чата": "https://i.ibb.co/5gQMW4gK/IMG-20250809-120308-934.jpg",  # Замените на вашу ссылку для владельца чата
+        "проверенный": "https://i.ibb.co/0jqRrPrm/IMG-20250809-120309-325.jpg",  # Замените на вашу ссылку для проверенного
+        "отказ от гаранта": "https://i.ibb.co/jPpYnM7H/IMG-20250809-120309-094.jpg",  # Замените на вашу ссылку для отказа
+        "скамер": "https://i.ibb.co/MxkQdSZp/IMG-20250809-120308-534.jpg",  # Замените на вашу ссылку для скамера
+        "непроверенный": "https://i.ibb.co/DD4n7HmF/IMG-20250809-120308-732.jpg"  # Замените на вашу ссылку для непроверенного
+    }
+    return banners.get(role, banners["непроверенный"])
+
+# --- Обновленная функция для баннера глобального сообщения ---
+def get_global_message_banner_url():
+    """Возвращает URL ссылку на баннер для глобального сообщения"""
+    return "https://i.ibb.co/5gQMW4gK/IMG-20250809-120308-934.jpg" # Замените на вашу ссылку
+
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("чек"))
 def handle_check(msg):
     chats.add(msg.chat.id)
 
     parts = msg.text.strip().split()
 
-    # Если указан username
+    # Проверяем, указан ли username
     if len(parts) > 1 and parts[1].startswith('@'):
         username = parts[1]
 
         # Сначала ищем в нашей базе данных
         user_id = find_user_by_username(username.lstrip('@'))
+        user_info = None # Инициализируем user_info
 
         if user_id:
-            # Нашли в базе данных
+            # Нашли в базе данных, пытаемся получить актуальную информацию
+            try:
+                user_info = bot.get_chat(int(user_id))
+            except Exception as api_error:
+                print(f"Не удалось получить актуальные данные для user_id {user_id} из API: {api_error}")
+                # Если API не работает, создаем простой объект с нужными атрибутами
+                class UserInfo:
+                    def __init__(self, user_id, username):
+                        self.id = int(user_id)
+                        self.username = username.lstrip('@')
+                        self.first_name = "Неизвестный"
+                
+                user_info = UserInfo(user_id, username)
+
+            target_name = user_info.first_name or "Неизвестный"
             role = get_role(user_id)
             risk = get_risk(user_id)
-            profile_link = f"<a href='tg://user?id={user_id}'>{username}</a>"
+            profile_link = f"<a href='tg://user?id={user_id}'>{target_name}</a>"
+            username_display = username
 
             # Создаем красивый интерфейс
             status_emoji = get_status_emoji(role)
             status_name = get_status_name(role)
             risk_color = get_risk_color(risk)
 
+            # Получаем информацию о проверке
+            verification_info = get_verification_info(user_id)
+
+            # Получаем биографию пользователя
+            user_bio = get_user_bio(user_id)
+            bio_text = user_bio if user_bio else "Биография не установлена. /bio"
+
+            # Получаем время проверки
+            check_time = datetime.now().strftime('%H:%M МСК • %d %B')
+
+            # Определяем текст проверяющего
+            verified_by_text = "Не проверен"
+            if verification_info:
+                try:
+                    verifier_chat = bot.get_chat(int(verification_info['verified_by']))
+                    verifier_name = verifier_chat.username or verifier_chat.first_name
+                    verifier_username = f"@{verifier_name}" if verifier_chat.username else verifier_name
+                    verified_by_text = f"Проверен гарантом {verifier_username}"
+                except:
+                    verified_by_text = f"Проверен гарантом ID: {verification_info['verified_by']}"
+
             text = (
-                    f"👤 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
-                    f"👤 <b>Пользователь:</b> {profile_link}\n"
-                    f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
-                    f"{status_emoji} <b>Статус:</b> {status_name}\n"
-                    f"{risk_color} <b>Риск скама:</b> {risk}\n\n"
-                    f"📊 <i>Информация актуальна</i>"
-                )
+                f"ℹ️ | {target_name} | <code>{user_id}</code>\n"
+                f"🗓 | Дата проверки: {check_time}\n\n"
+                f"{status_emoji} | Статус: {status_name} |\n"
+                f"{risk_color} | Процент скама: {risk} |\n"
+                f"{verified_by_text}\n\n"
+                f"📝 | О себе: {bio_text}\n\n"
+                f"👤 | Профиль: <a href='tg://user?id={user_id}'>{target_name}</a>\n\n"
+            )
         else:
             # Пытаемся найти через API Telegram
             user_info = get_user_by_username(username)
             if user_info:
                 user_id = user_info.id
-                user_name = user_info.first_name
+                target_name = user_info.first_name
                 role = get_role(user_id)
                 risk = get_risk(user_id)
-                profile_link = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
+                profile_link = f"<a href='tg://user?id={user_id}'>{target_name}</a>"
 
                 # Сохраняем связь username -> user_id
                 save_username_mapping(user_id, username.lstrip('@'))
@@ -549,14 +725,37 @@ def handle_check(msg):
                 status_emoji = get_status_emoji(role)
                 status_name = get_status_name(role)
                 risk_color = get_risk_color(risk)
+                username_display = username
+
+                # Получаем информацию о проверке
+                verification_info = get_verification_info(user_id)
+
+                # Получаем биографию пользователя
+                user_bio = get_user_bio(user_id)
+                bio_text = user_bio if user_bio else "Биография не установлена. /bio"
+
+                # Получаем время проверки
+                check_time = datetime.now().strftime('%H:%M МСК • %d %B')
+
+                # Определяем текст проверяющего
+                verified_by_text = "Не проверен"
+                if verification_info:
+                    try:
+                        verifier_chat = bot.get_chat(int(verification_info['verified_by']))
+                        verifier_name = verifier_chat.username or verifier_chat.first_name
+                        verifier_username = f"@{verifier_name}" if verifier_chat.username else verifier_name
+                        verified_by_text = f"Проверен гарантом {verifier_username}"
+                    except:
+                        verified_by_text = f"Проверен гарантом ID: {verification_info['verified_by']}"
 
                 text = (
-                    f"👤 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
-                    f"👤 <b>Пользователь:</b> {profile_link}\n"
-                    f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
-                    f"{status_emoji} <b>Статус:</b> {status_name}\n"
-                    f"{risk_color} <b>Риск скама:</b> {risk}\n\n"
-                    f"📊 <i>Информация актуальна</i>"
+                    f"ℹ️ | {target_name} | <code>{user_id}</code>\n"
+                    f"🗓 | Дата проверки: {check_time}\n\n"
+                    f"{status_emoji} | Статус: {status_name} |\n"
+                    f"{risk_color} | Процент скама: {risk} |\n"
+                    f"{verified_by_text}\n\n"
+                    f"📝 | О себе: {bio_text}\n\n"
+                    f"👤 | Профиль: <a href='tg://user?id={user_id}'>{target_name}</a>\n\n"
                 )
             else:
                 text = f"❌ Пользователь {username} не найден"
@@ -564,10 +763,11 @@ def handle_check(msg):
         # Проверяем по reply или автора сообщения
         user = msg.reply_to_message.from_user if msg.reply_to_message else msg.from_user
         user_id = user.id
-        user_name = user.first_name
+        target_name = user.first_name or "Неизвестный"
+        username_display = f"@{user.username}" if user.username else "Не указан"
         role = get_role(user_id)
         risk = get_risk(user_id)
-        profile_link = f"<a href='tg://user?id={user_id}'>{user_name}</a>"
+        profile_link = f"<a href='tg://user?id={user_id}'>{target_name}</a>"
 
         # Сохраняем username если он есть
         if user.username:
@@ -578,24 +778,206 @@ def handle_check(msg):
         status_name = get_status_name(role)
         risk_color = get_risk_color(risk)
 
+        # Получаем информацию о проверке
+        verification_info = get_verification_info(user_id)
+
+        # Получаем биографию пользователя
+        user_bio = get_user_bio(user_id)
+        bio_text = user_bio if user_bio else "Биография не установлена. /bio"
+
+        # Получаем время проверки
+        check_time = datetime.now().strftime('%H:%M МСК • %d %B')
+
+        # Определяем текст проверяющего
+        verified_by_text = "Не проверен"
+        if verification_info:
+            try:
+                verifier_chat = bot.get_chat(int(verification_info['verified_by']))
+                verifier_name = verifier_chat.username or verifier_chat.first_name
+                verifier_username = f"@{verifier_name}" if verifier_chat.username else verifier_name
+                verified_by_text = f"Проверен гарантом {verifier_username}"
+            except:
+                verified_by_text = f"Проверен гарантом ID: {verification_info['verified_by']}"
+
         text = (
-            f"👤 <b>ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
-            f"👤 <b>Пользователь:</b> {profile_link}\n"
-            f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
-            f"{status_emoji} <b>Статус:</b> {status_name}\n"
-            f"{risk_color} <b>Риск скама:</b> {risk}\n\n"
-            f"📊 <i>Информация актуальна</i>"
+            f"ℹ️ | {target_name} | <code>{user_id}</code>\n"
+            f"🗓 | Дата проверки: {check_time}\n\n"
+            f"{status_emoji} | Статус: {status_name} |\n"
+            f"{risk_color} | Процент скама: {risk} |\n"
+            f"{verified_by_text}\n\n"
+            f"📝 | О себе: {bio_text}\n\n"
+            f"👤 | Профиль: <a href='tg://user?id={user_id}'>{target_name}</a>"
         )
+
+    # Определяем финальные значения для использования в дальнейшем коде
+    final_user_id = user_id if 'user_id' in locals() else (user.id if 'user' in locals() else None)
+    final_role = role if 'role' in locals() else "непроверенный"
+    final_target_name = target_name if 'target_name' in locals() else "Неизвестный"
 
     # Создаем кнопку "Профиль"
     markup = types.InlineKeyboardMarkup()
     profile_button = types.InlineKeyboardButton(
-        "📋 Подробный профиль", 
-        url=f"https://t.me/{bot.get_me().username}?start=profile_{user_id if 'user_id' in locals() else (user.id if 'user' in locals() else 'unknown')}"
+        "📋 Подробный профиль",
+        url=f"https://t.me/{bot.get_me().username}?start=profile_{final_user_id if final_user_id else 'unknown'}"
     )
     markup.add(profile_button)
 
-    bot.reply_to(msg, text, reply_markup=markup)
+    # Увеличиваем счетчик просмотров профиля
+    if final_user_id:
+        increment_profile_views(final_user_id)
+        views_count = get_profile_views(final_user_id)
+        # Добавляем информацию о просмотрах
+        text += f"       👁️ {views_count}\n"
+        text += f"📅 Последняя активность: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    # Добавляем баннер в текст через HTML ссылку
+    banner_url = get_role_banner_url(final_role)
+    if banner_url:
+        text += f'\n<a href="{banner_url}">&#8203;</a>'
+
+    # Отправляем сообщение с встроенным баннером
+    try:
+        bot.send_message(msg.chat.id, text, reply_markup=markup, parse_mode="HTML")
+    except Exception as e:
+        print(f"Ошибка при отправке сообщения: {e}")
+        try:
+            bot.send_message(msg.chat.id, text, reply_markup=markup, parse_mode="HTML")
+        except:
+            bot.send_message(msg.chat.id, "❌ Ошибка при отображении профиля")
+
+@bot.message_handler(commands=["bio"])
+def handle_bio(msg):
+    user_id = msg.from_user.id
+    parts = msg.text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        # Если команда вызвана без текста, показываем текущую биографию или сообщение об ее отсутствии
+        current_bio = get_user_bio(user_id)
+        if current_bio:
+            bot.reply_to(msg, f"Ваша текущая биография:\n\n{current_bio}\n\nЧтобы изменить, используйте команду:\n/bio ваш_новый_текст_биографии (до 30 слов)")
+        else:
+            bot.reply_to(msg, "Биография не установлена. Используйте команду:\n/bio ваш_текст_биографии (до 30 слов)")
+        return
+
+    new_bio = parts[1].strip()
+
+    # Ограничение длины биографии
+    if len(new_bio.split()) > 30:
+        bot.reply_to(msg, "❌ Ваша биография слишком длинная. Максимум 30 слов.")
+        return
+    elif len(new_bio) == 0:
+        bot.reply_to(msg, "❌ Биография не может быть пустой.")
+        return
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO user_bios (user_id, bio, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (str(user_id), new_bio)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        bot.reply_to(msg, f"✅ Ваша биография успешно обновлена!\n\n{new_bio}")
+    except Exception as e:
+        bot.reply_to(msg, f"❌ Ошибка при сохранении биографии: {e}")
+
+@bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("проверен"))
+def handle_verify_user(msg):
+    chats.add(msg.chat.id)
+    caller_role = get_role(msg.from_user.id)
+
+    # Проверяем права на команду (гаранты, владельцы чата и владельцы)
+    if caller_role not in ["гарант", "владелец чата", "владелец"] and msg.from_user.id not in OWNER_IDS:
+        bot.reply_to(msg, "❌ У вас нет прав на использование команды 'проверен'. Доступно только гарантам и владельцам чата.")
+        return
+
+    parts = msg.text.strip().split()
+
+    # Проверяем, указан ли username
+    if len(parts) >= 2 and parts[1].startswith('@'):
+        username = parts[1]
+
+        # Ищем пользователя по username
+        user_id = find_user_by_username(username.lstrip('@'))
+
+        if not user_id:
+            # Пытаемся найти через API
+            user_info = get_user_by_username(username)
+            if user_info:
+                user_id = user_info.id
+                target_name = user_info.first_name
+                save_username_mapping(user_id, username.lstrip('@'))
+            else:
+                bot.reply_to(msg, f"❌ Пользователь {username} не найден")
+                return
+        else:
+            # Если нашли в базе, получаем имя через API для актуальности
+            try:
+                user_info = bot.get_chat(int(user_id))
+                target_name = user_info.first_name
+            except:
+                target_name = username
+
+        target_id = int(user_id)
+        profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+
+    elif msg.reply_to_message:
+        # Работаем через reply
+        target = msg.reply_to_message.from_user
+        target_id = target.id
+        target_name = target.first_name
+        profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+    else:
+        bot.reply_to(msg, "Ответьте на сообщение пользователя или укажите @username.\nПример: проверен @username")
+        return
+
+    # Защита от самопроверки
+    if target_id == msg.from_user.id:
+        bot.reply_to(msg, "❌ Нельзя проверять самого себя.")
+        return
+
+    if isinstance(target_id, int) and target_id in OWNER_IDS:
+        bot.reply_to(msg, "❌ Владелец не нуждается в проверке.")
+        return
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Присваиваем роль "проверенный" пользователю
+        cursor.execute(
+            "INSERT OR REPLACE INTO users (user_id, role, scam_percent) VALUES (?, ?, ?)",
+            (str(target_id), "проверенный", "10%")
+        )
+
+        # Сохраняем информацию о проверке
+        cursor.execute(
+            "INSERT OR REPLACE INTO user_verifications (user_id, verified_by, verified_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (str(target_id), str(msg.from_user.id))
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Получаем имя проверяющего
+        verifier_name = msg.from_user.first_name
+        verifier_role = get_role(msg.from_user.id)
+
+        # Определяем название роли проверяющего
+        role_names = {
+            "владелец": "владельцем",
+            "гарант": "гарантом",
+            "владелец чата": "владельцем чата"
+        }
+        verifier_role_name = role_names.get(verifier_role, "гарантом")
+
+        bot.reply_to(msg, f"✅ {profile_link} получил статус 'Проверенный' и проверен {verifier_role_name} <a href='tg://user?id={msg.from_user.id}'>{verifier_name}</a>")
+
+    except Exception as e:
+        bot.reply_to(msg, f"❌ Ошибка при проверке пользователя: {e}")
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("занести"))
 def handle_add_role(msg):
@@ -634,7 +1016,7 @@ def handle_add_role(msg):
                 temp_id = abs(hash(username.lstrip('@'))) % (10**9)  # Генерируем уникальный ID
                 user_id = temp_id
                 target_name = username.lstrip('@')
-                # Сохраняем связь username -> temp_id
+                # Сохраняем связь username -> temp_id в обе стороны
                 save_username_mapping(temp_id, username.lstrip('@'))
                 print(f"Создан временный ID {temp_id} для username {username}")
         else:
@@ -672,7 +1054,7 @@ def handle_add_role(msg):
     # Проверяем специфические права на занос конкретных ролей
     role_permission_map = {
         "скамер": "заносить_скамер",
-        "гарант": "заносить_гарант", 
+        "гарант": "заносить_гарант",
         "владелец_чата": "заносить_владелец_чата",
         "отказ": "заносить_отказ",
         "отказ_от_гаранта": "заносить_отказ",
@@ -721,13 +1103,13 @@ def handle_add_role(msg):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "REPLACE INTO users (user_id, role, scam_percent) VALUES (%s, %s, %s)",
+            "INSERT OR REPLACE INTO users (user_id, role, scam_percent) VALUES (?, ?, ?)",
             (str(target_id), role_text, scam_percent)
         )
         conn.commit()
         cursor.close()
         conn.close()
-    except Error as e:
+    except Exception as e:
         bot.reply_to(msg, f"Ошибка БД: {e}")
         return
 
@@ -776,41 +1158,97 @@ def handle_remove_user(msg):
 
     # Проверяем, указан ли username
     if len(parts) >= 2 and parts[1].startswith('@'):
-        username = parts[1]
-
-        # Ищем пользователя по username
-        user_id = find_user_by_username(username.lstrip('@'))
-
-        if not user_id:
-            # Пытаемся найти через API
-            user_info = get_user_by_username(username)
-            if user_info:
-                user_id = user_info.id
-                target_name = user_info.first_name
-                save_username_mapping(user_id, username.lstrip('@'))
-            else:
-                # Если пользователь не найден, проверяем есть ли он в базе по username
-                import hashlib
-                temp_id = abs(hash(username.lstrip('@'))) % (10**9)
-                user_id = temp_id
-                target_name = username.lstrip('@')
-                print(f"Ищем пользователя с временным ID {temp_id} для username {username}")
-        else:
-            # Если нашли в базе, получаем имя через API для актуальности
+        username = parts[1].lstrip('@')
+        
+        # Сначала ищем в базе данных по username
+        user_id = find_user_by_username(username)
+        
+        if user_id:
+            # Нашли в базе по username
             try:
                 user_info = bot.get_chat(int(user_id))
                 target_name = user_info.first_name
             except:
                 target_name = username
-
-        target_id = int(user_id)
-        profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+            
+            target_id = int(user_id)
+            profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+            
+        else:
+            # Не нашли в базе по username, пробуем через API
+            user_info = get_user_by_username(f"@{username}")
+            if user_info:
+                # Нашли через API, проверяем есть ли в базе по ID
+                target_id = user_info.id
+                target_name = user_info.first_name
+                profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
+                
+                # Проверяем есть ли этот пользователь в базе по ID
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (str(target_id),))
+                    exists = cursor.fetchone()
+                    cursor.close()
+                    conn.close()
+                    
+                    if not exists:
+                        bot.reply_to(msg, f"❌ Пользователь @{username} не найден в базе данных")
+                        return
+                        
+                except Exception as e:
+                    print(f"Ошибка при проверке пользователя в базе: {e}")
+                    bot.reply_to(msg, f"❌ Ошибка при поиске пользователя")
+                    return
+            else:
+                # Не нашли через API, пробуем найти по временному ID
+                temp_id = abs(hash(username)) % (10**9)
+                
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (str(temp_id),))
+                    temp_user_exists = cursor.fetchone()
+                    cursor.close()
+                    conn.close()
+                    
+                    if temp_user_exists:
+                        target_id = temp_id
+                        target_name = username
+                        profile_link = f"<a href='tg://user?id={target_id}'>@{target_name}</a>"
+                        print(f"Найден пользователь с временным ID {temp_id} для username @{username}")
+                    else:
+                        bot.reply_to(msg, f"❌ Пользователь @{username} не найден в базе данных")
+                        return
+                except Exception as e:
+                    print(f"Ошибка при поиске временного ID: {e}")
+                    bot.reply_to(msg, f"❌ Пользователь @{username} не найден")
+                    return
 
     elif msg.reply_to_message:
         # Работаем через reply
         target = msg.reply_to_message.from_user
         target_id = target.id
+        target_name = target.first_name
         profile_link = f"<a href='tg://user?id={target.id}'>{target.first_name}</a>"
+        
+        # Проверяем есть ли пользователь в базе
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (str(target_id),))
+            exists = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if not exists:
+                bot.reply_to(msg, f"❌ Пользователь {target_name} не найден в базе данных")
+                return
+                
+        except Exception as e:
+            print(f"Ошибка при проверке пользователя в базе: {e}")
+            bot.reply_to(msg, f"❌ Ошибка при поиске пользователя")
+            return
     else:
         bot.reply_to(msg, "Ответьте на сообщение пользователя или укажите @username.\nПример: вынести @username")
         return
@@ -822,16 +1260,25 @@ def handle_remove_user(msg):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE user_id = %s", (str(target_id),))
+        
+        # Удаляем пользователя из всех таблиц
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (str(target_id),))
+        cursor.execute("DELETE FROM user_verifications WHERE user_id = ?", (str(target_id),))
+        cursor.execute("DELETE FROM profile_views WHERE user_id = ?", (str(target_id),))
+        cursor.execute("DELETE FROM user_bios WHERE user_id = ?", (str(target_id),))
+        cursor.execute("DELETE FROM usernames WHERE user_id = ?", (str(target_id),))
+
         if cursor.rowcount > 0:
             conn.commit()
             bot.reply_to(msg, f"✅ {profile_link} удален из базы")
         else:
-            bot.reply_to(msg, f"❌ {profile_link} не найден")
+            bot.reply_to(msg, f"❌ {profile_link} не найден в базе")
+            
         cursor.close()
         conn.close()
-    except Error as e:
-        bot.reply_to(msg, f"Ошибка БД: {e}")
+    except Exception as e:
+        bot.reply_to(msg, f"❌ Ошибка БД: {e}")
+        print(f"Database error in handle_remove_user: {e}")
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("гаранты"))
 def handle_show_guarantors(msg):
@@ -850,9 +1297,10 @@ def handle_show_guarantors(msg):
 
         # Также исключаем владельцев из OWNER_IDS
         filtered_guarantors = []
-        for (user_id,) in guarantors:
+        for row in guarantors:
+            user_id = row['user_id']
             if int(user_id) not in OWNER_IDS:
-                filtered_guarantors.append((user_id,))
+                filtered_guarantors.append(user_id)
 
         if not filtered_guarantors:
             bot.reply_to(msg, "📋 В активном списке гарантов базы нет зарегистрированных пользователей.")
@@ -860,7 +1308,7 @@ def handle_show_guarantors(msg):
 
         # Формируем список гарантов с кликабельными ссылками на профили
         guarantor_list = []
-        for (user_id,) in filtered_guarantors:
+        for user_id in filtered_guarantors:
             try:
                 # Пытаемся получить информацию о пользователе через API
                 user_info = bot.get_chat(int(user_id))
@@ -918,19 +1366,19 @@ def handle_change_scam_percent(msg):
         conn = get_connection()
         cursor = conn.cursor()
         # Сначала проверяем, есть ли пользователь в базе
-        cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (str(target_id),))
+        cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (str(target_id),))
         user_exists = cursor.fetchone()
 
         if user_exists:
             # Обновляем существующего пользователя
             cursor.execute(
-                "UPDATE users SET scam_percent = %s WHERE user_id = %s",
+                "UPDATE users SET scam_percent = ? WHERE user_id = ?",
                 (percent, str(target_id))
             )
         else:
             # Создаем нового пользователя с кастомным процентом
             cursor.execute(
-                "INSERT INTO users (user_id, role, scam_percent) VALUES (%s, %s, %s)",
+                "INSERT INTO users (user_id, role, scam_percent) VALUES (?, ?, ?)",
                 (str(target_id), "непроверенный", percent)
             )
 
@@ -938,7 +1386,7 @@ def handle_change_scam_percent(msg):
         cursor.close()
         conn.close()
         bot.reply_to(msg, f"✅ Процент скама для {profile_link} установлен на {percent}")
-    except Error as e:
+    except Exception as e:
         bot.reply_to(msg, f"Ошибка БД: {e}")
 
 def get_all_bot_chats():
@@ -949,7 +1397,7 @@ def get_all_bot_chats():
 
         # Получаем все чаты из базы данных
         cursor.execute("SELECT chat_id FROM bot_chats")
-        db_chats = [row[0] for row in cursor.fetchall()]
+        db_chats = [row['chat_id'] for row in cursor.fetchall()]
 
         cursor.close()
         conn.close()
@@ -968,10 +1416,11 @@ def save_chat_to_db(chat_id, chat_title=None, chat_type=None):
         cursor = conn.cursor()
 
         cursor.execute("""
-        REPLACE INTO bot_chats (chat_id, chat_title, chat_type) 
-        VALUES (%s, %s, %s)
+        INSERT OR REPLACE INTO bot_chats (chat_id, chat_title, chat_type, last_activity)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         """, (str(chat_id), chat_title, chat_type))
 
+        conn.commit()
         cursor.close()
         conn.close()
     except Exception as e:
@@ -985,15 +1434,15 @@ def should_warn_about_scammer(chat_id, user_id):
 
         # Получаем последнее предупреждение
         cursor.execute("""
-        SELECT last_warning FROM scammer_warnings 
-        WHERE chat_id = %s AND user_id = %s
+        SELECT last_warning FROM scammer_warnings
+        WHERE chat_id = ? AND user_id = ?
         """, (str(chat_id), str(user_id)))
 
         result = cursor.fetchone()
         current_time = datetime.now()
 
         if result:
-            last_warning = result[0]
+            last_warning = datetime.fromisoformat(result['last_warning'])
             # Проверяем, прошло ли 3 минуты
             if current_time - last_warning < timedelta(minutes=3):
                 cursor.close()
@@ -1002,10 +1451,11 @@ def should_warn_about_scammer(chat_id, user_id):
 
         # Обновляем время последнего предупреждения
         cursor.execute("""
-        REPLACE INTO scammer_warnings (chat_id, user_id, last_warning)
-        VALUES (%s, %s, %s)
-        """, (str(chat_id), str(user_id), current_time))
+        INSERT OR REPLACE INTO scammer_warnings (chat_id, user_id, last_warning)
+        VALUES (?, ?, ?)
+        """, (str(chat_id), str(user_id), current_time.isoformat()))
 
+        conn.commit()
         cursor.close()
         conn.close()
         return True
@@ -1047,8 +1497,18 @@ def handle_global_message(msg):
             # Проверяем, что бот все еще есть в чате
             member = bot.get_chat_member(chat_id_int, bot.get_me().id)
             if member.status in ['member', 'administrator', 'creator']:
-                bot.send_message(chat_id_int, f"📢 <b>Глобальное сообщение:</b>\n{message_to_send}")
-                count += 1
+                try:
+                    # Добавляем баннер в текст глобального сообщения
+                    banner_url = get_global_message_banner_url()
+                    message_text = message_to_send
+                    if banner_url:
+                        message_text += f'\n\n<a href="{banner_url}">&#8203;</a>'
+
+                    bot.send_message(chat_id_int, message_text, parse_mode="HTML")
+                    count += 1
+                except Exception as e:
+                    print(f"Не удалось отправить сообщение в чат {chat_id}: {e}")
+                    failed += 1
 
                 # Обновляем информацию о чате
                 try:
@@ -1086,13 +1546,13 @@ def handle_grant_permission(msg):
 
     command_name = parts[1].lower()
     available_commands = [
-        "занести", "вынести", "ип",
+        "занести", "вынести", "ип", "сетка_бан",
         "заносить_скамер", "заносить_гарант", "заносить_владелец_чата",
-        "заносить_отказ", "заносить_проверенный"
+        "заносить_отказ", "заносить_проверенный", "проверенный" # Добавлена команда "проверенный"
     ]
 
     if command_name not in available_commands:
-        bot.reply_to(msg, f"Доступные команды:\n• Основные: занести, вынести, ип\n• Специфические: заносить_скамер, заносить_гарант, заносить_владелец_чата, заносить_отказ, заносить_проверенный")
+        bot.reply_to(msg, f"Доступные команды:\n• Основные: занести, вынести, ип, сетка_бан\n• Специфические: заносить_скамер, заносить_гарант, заносить_владелец_чата, заносить_отказ, заносить_проверенный, проверенный")
         return
 
     target = msg.reply_to_message.from_user
@@ -1128,13 +1588,13 @@ def handle_revoke_permission(msg):
 
     command_name = parts[1].lower()
     available_commands = [
-        "занести", "вынести", "ип",
+        "занести", "вынести", "ип", "сетка_бан",
         "заносить_скамер", "заносить_гарант", "заносить_владелец_чата",
-        "заносить_отказ", "заносить_проверенный"
+        "заносить_отказ", "заносить_проверенный", "проверенный"
     ]
 
     if command_name not in available_commands:
-        bot.reply_to(msg, f"Доступные команды:\n• Основные: занести, вынести, ип\n• Специфические: заносить_скамер, заносить_гарант, заносить_владелец_чата, заносить_отказ, заносить_проверенный")
+        bot.reply_to(msg, f"Доступные команды:\n• Основные: занести, вынести, ип, сетка_бан\n• Специфические: заносить_скамер, заносить_гарант, заносить_владелец_чата, заносить_отказ, заносить_проверенный, проверенный")
         return
 
     target = msg.reply_to_message.from_user
@@ -1190,8 +1650,9 @@ def handle_list_chats(msg):
 # --- Команда сетка бан ---
 @bot.message_handler(func=lambda msg: msg.text and msg.text.lower().startswith("сетка бан"))
 def handle_network_ban(msg):
-    if msg.from_user.id not in OWNER_IDS:
-        bot.reply_to(msg, "❌ У вас нет прав использовать эту команду.")
+    # Проверяем права на команду
+    if not has_command_permission(msg.from_user.id, "сетка_бан"):
+        bot.reply_to(msg, "❌ У вас нет прав на использование команды 'сетка бан'.")
         return
 
     parts = msg.text.strip().split()
@@ -1238,7 +1699,7 @@ def handle_network_ban(msg):
         return
 
     profile_link = f"<a href='tg://user?id={target_id}'>{target_name}</a>"
-    
+
     # Получаем все возможные чаты
     all_possible_chats = get_all_bot_chats()
 
@@ -1248,7 +1709,7 @@ def handle_network_ban(msg):
 
     bot.reply_to(msg, f"🔨 Начинаю сетка бан для {profile_link} в {len(all_possible_chats)} чат(ах)...")
 
-    # Баним во всех найденных чатах
+    # Баним пользователя во всех найденных чатах
     for chat_id in all_possible_chats:
         try:
             # Преобразуем в int если возможно
@@ -1363,16 +1824,53 @@ def safe_reply(msg, text):
             print(f"Не удалось отправить сообщение в чат {msg.chat.id}: {e2}")
 
 def run_bot():
-    """Функция для запуска бота с автоматическим перезапуском"""
-    while True:
-        try:
-            print("Бот запускается...")
-            bot.infinity_polling(timeout=20, long_polling_timeout=10, none_stop=True)
-        except Exception as e:
-            print(f"❌ Ошибка при работе бота: {e}")
-            print("🔄 Перезапуск через 10 секунд...")
-            time.sleep(10)
-            print("🚀 Попытка перезапуска бота...")
+    """Функция для запуска бота с улучшенной обработкой ошибок"""
+    print("🤖 Инициализация бота...")
 
-# Запускаем бота с автоматическим перезапуском
-run_bot()
+    try:
+        # Проверяем валидность токена
+        bot_info = bot.get_me()
+        print(f"✅ Бот успешно подключен: @{bot_info.username}")
+    except Exception as token_error:
+        print(f"❌ Ошибка токена: {token_error}")
+        return
+
+    # Очищаем pending updates
+    try:
+        bot.delete_webhook()
+        print("🧹 Webhook очищен")
+    except:
+        pass
+
+    # Получаем обновления и очищаем очередь
+    try:
+        updates = bot.get_updates(timeout=1)
+        if updates:
+            last_update_id = updates[-1].update_id
+            bot.get_updates(offset=last_update_id + 1, timeout=1)
+            print("🧹 Очередь обновлений очищена")
+    except:
+        pass
+
+    print("🚀 Запуск бота...")
+
+    try:
+        bot.infinity_polling(
+            timeout=30,
+            long_polling_timeout=20,
+            none_stop=True,
+            interval=0,
+            allowed_updates=None,
+            skip_pending=True
+        )
+    except KeyboardInterrupt:
+        print("\n⛔ Получен сигнал остановки")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        print("🛑 Бот остановлен")
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🤖 Telegram Bot Starting...")
+    print("=" * 50)
+    run_bot()
