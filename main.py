@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_TOKEN = os.getenv('8363145008:AAGpk3nkNYzTMFpQ0Ve--aOhxPYFWyp5EGg')
 OWNER_IDS = [7537570296, 5821123636]
 
 DB_PATH = "bot_database.db"
