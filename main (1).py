@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 import os
 from banner_generator import get_role_banner_file, get_role_banner_url
 
-BOT_TOKEN = "8363145008:AAHqRj1mkl_VB81v8XHJtXN280Pen5uj1aE"
+BOT_TOKEN = 
+"8363145008:AAHqRj1mkl_VB81v8XHJtXN280Pen5uj1aE"
 OWNER_IDS = [7537570296, 5821123636]
 
 DB_PATH = "bot_database.db"
